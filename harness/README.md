@@ -1,0 +1,57 @@
+# AFL-ICP deterministic harness
+
+This directory contains the offline preparation/orchestration package. The AFLNet C engine remains the runtime fuzzer; no LLM call is made from the fuzzing process. A local campaign is intentionally an explicit operator action (`aflicp run`). The controller accepts only loopback/private IPv4 target addresses and does not scan or discover targets.
+
+## Host and package setup
+
+The fuzzer engine build and target instrumentation are supported on a Linux lab host with the compiler/LLVM, AFLNet build dependencies, graphviz, libcap development files, and Docker installed. This source workspace is macOS, so its Linux engine build and Docker sandbox cannot be exercised here. Keep model and target build images prebuilt and pin them by image ID in the resolved run manifest. For PDF text extraction, PyMuPDF is installed with the package. Tesseract is a system dependency for poor text-layer pages. PP-StructureV3 is optional and should use local pinned model files when offline.
+
+Install into an isolated virtual environment with `python3 -m pip install -e .`. Optional table/layout OCR dependencies are installed with `python3 -m pip install -e '.[layout]'`. Build the generator image from this directory using a locally available pinned Python base image, then record the resulting image ID:
+
+```sh
+docker build -f Dockerfile.generator -t aflicp-generator:local .
+docker image inspect --format '{{.Id}}' aflicp-generator:local
+docker build -f Dockerfile.target-build -t aflicp-target-build:local .
+docker image inspect --format '{{.Id}}' aflicp-target-build:local
+```
+
+The example config is deliberately incomplete. Replace the PDF and C0 paths, target revision (the resolved commit is recorded), local build image, endpoint/model names, and environment-variable names. Never put API credentials directly in YAML. `Dockerfile.target-build` is a convenience starting point; pin its base image digest and resulting local image ID for experiments. The harness records the actual image ID and does not download build images automatically.
+
+The first target recipe supports a pinned libmodbus test server. An already-built local executable is also supported through `target.executable` plus an argv list. Unknown source repositories do not execute README-provided scripts; they require a reviewed recipe implementation or prebuilt executable. `target prepare` copies a known recipe source into the run artifact tree and builds it with Docker networking disabled. For the campaign and replay, AFLNet launches the configured executable as a local child process; the build container is not a runtime sandbox. Only configure a target you control, and for less-trusted test binaries run the whole harness inside a dedicated disposable Linux VM/container with no production or public-network route.
+
+## Deterministic workflow
+
+`validate-config` only checks local configuration and paths. `prepare` creates an immutable run directory and executes a deterministic dependency graph: render/read all PDF pages, OCR fallback and visual reconstruction, segment/relevance labeling, six-file client/server knowledge synthesis and review, adapter synthesis/review/build, seed-generator synthesis/review/sandbox, target profile, representative C0 dry run, and launch barrier. LLM and OCR provider outputs, page images, source hashes, model usage and all stage diagnostics are retained with the run.
+
+```sh
+aflicp validate-config --config config.yaml
+aflicp prepare --config config.yaml
+aflicp status --config config.yaml --run-id RUN_ID
+aflicp run --config config.yaml --run-id RUN_ID
+aflicp analyze --config config.yaml --run-id RUN_ID
+aflicp export --config config.yaml --run-id RUN_ID --output /safe/location/RUN_ID.tar.gz
+```
+
+Use `aflicp resume` only for a stopped/incomplete campaign. It reuses the exact fuzzer, adapter, output directory, corpus and evidence counter; it refuses changed binaries. `aflicp experiment` creates configured independent repetitions and refuses to start campaigns if adapter, fuzzer, original C0, or prepared corpus hashes differ across repetitions. Run time, repetitions, LLM retry budgets, evidence sample period and replay limits are configuration values.
+
+The individual `specification prepare`, `adapter prepare`, `seeds prepare`, and `target prepare` commands require an existing `--run-id` and satisfy that stage's artifact dependencies. They are for controlled continuation/diagnosis; `prepare` is the normal complete workflow.
+
+## Artifacts and safety properties
+
+Each run contains `run_manifest.json`, `task_state.json`, `dag.json`, `diagnostics.jsonl`, the full PDF snapshots and screenshots, `knowledge/` (client/server request and response JSON, Mermaid, and Markdown), the adapter source/state encoding/build profile, the untouched C0 snapshot, generated candidate metadata, a flat `corpus/input/` of raw `.bin` files, target build/profile/validation records, `campaign.json`, AFLNet's original crash/hang output, and per-campaign `interactions/campaigns/<campaign-id>/` evidence packs/indexes.
+
+Knowledge is source-grounded and physically separated by protocol endpoint role in all three representations. Generated seed Python runs only in a no-network, read-only-root, non-root Docker sandbox with CPU, memory, process, byte, candidate and time limits. The original C0 files are copied and hashed; they are not passed through generated-code execution. Generated empty/failed seeds and exact SHA-256 duplicates are removed; no `afl-tmin`/`afl-cmin` minimization is run. Final AFLNet input directories contain only flat raw binary files.
+
+At runtime the C hooks capture normal ordinary executions only (not calibration/trim/import): request bytes and send result, receive windows, parser state IDs, coverage bitmap when enabled, timestamps, and new-coverage or every-Nth-execution trigger. A separate local Unix-socket writer validates and fsyncs bounded frames before indexing them. Full queues block the fuzzer; writer failure/stall marks evidence incomplete. Crash/hang testcases remain in AFLNet's own directories and are referenced in the analysis report rather than duplicated.
+
+`analyze` reads only complete evidence, verifies pack hashes, replays selected exact exchanges against the configured local target, asks the reasoning model for source-grounded candidates, and uses the same configured model for independent review. Each invocation writes a new `analysis/revisions/vNNN/` directory, so partial output is preserved and analysis can be repeated without overwriting evidence. A result is labeled confirmed only if the reviewer confirms it, citations are exact substrings of preserved source text, and at least one replay reproduces the recorded receive-window bytes/status. A protocol deviation is not automatically a vulnerability. Review output remains a research finding, not a substitute for human triage.
+
+## Provider configuration and offline mode
+
+Provider profiles use OpenAI-compatible chat-completions or Anthropic messages APIs and refer to credentials only by environment-variable name. Retries/timeouts are operator-controlled in `llm.api`. Successful structured responses are cached by model profile, prompt, input and page-image hashes; cache hits are reported at zero newly charged cost. Request logs retain hashes/size rather than duplicating raw PDF screenshots. Offline mode forbids remote LLM/OCR/model and repository downloads, so all required PDF, OCR model, LLM response cache, target source/build image and seed sandbox artifacts must already exist locally.
+
+## Current scope and known limits
+
+The first closed loop is `MODBUS` over TCP with a known libmodbus test-server recipe. Legacy ICS protocol adapters are retained in the registry, while generated protocol adapters are built as regular C modules selected by protocol name; adding another ICS protocol requires a reviewed protocol-specific parser/state encoding and a target recipe where needed. No protocol semantic behavior is invented when the PDF leaves it unspecified; unresolved source questions stop publication or confirmation.
+
+The evidence recorder and adapter registry are integrated into the engine clone. Linux compilation, a real PDF/model response, Docker sandbox execution, libmodbus build, dry-run against a locally configured target, long-running campaign, and replay confirmation require the operator's authorized Linux lab environment and have not been run from this macOS implementation workspace.

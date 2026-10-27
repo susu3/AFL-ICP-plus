@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "protocols": [
+    {"name":"MODBUS","variant":"builtin","source":"protocols/builtins/modbus.c","requests":"aflicp_modbus_requests","responses":"aflicp_modbus_responses","state_encoding":{"initial":0,"normal":"function_code (1..127)","exception":"0x10000 | (function_code << 8) | exception_code","session_stable":true}},
+    {"name":"MQTT","variant":"legacy","source":"protocols/builtins/legacy_ics.c","requests":"extract_requests_mqtt","responses":"extract_response_codes_mqtt"},
+    {"name":"IEC104","variant":"legacy","source":"protocols/builtins/legacy_ics.c","requests":"extract_requests_iec104","responses":"extract_response_codes_iec104"},
+    {"name":"ETHERNETIP","variant":"legacy","source":"protocols/builtins/legacy_ics.c","requests":"extract_requests_ethernetip","responses":"extract_response_codes_ethernetip"},
+    {"name":"BACNETIP","variant":"legacy","source":"protocols/builtins/legacy_ics.c","requests":"extract_requests_bacnetip","responses":"extract_response_codes_bacnetip"},
+    {"name":"DNP3","variant":"legacy","source":"protocols/builtins/legacy_ics.c","requests":"extract_requests_dnp3","responses":"extract_response_codes_dnp3"},
+    {"name":"OPCUACP","variant":"legacy","source":"protocols/builtins/legacy_ics.c","requests":"extract_requests_opcuacp","responses":"extract_response_codes_opcuacp"},
+    {"name":"SLMPA","variant":"legacy","source":"protocols/builtins/legacy_ics.c","requests":"extract_requests_slmpa","responses":"extract_response_codes_slmpa"},
+    {"name":"SLMPB","variant":"legacy","source":"protocols/builtins/legacy_ics.c","requests":"extract_requests_slmpb","responses":"extract_response_codes_slmpb"}
+  ]
+}

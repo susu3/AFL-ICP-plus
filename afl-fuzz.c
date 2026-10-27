@@ -67,6 +67,11 @@
 #include <sys/ioctl.h>
 #include <sys/file.h>
 #include <sys/capability.h>
+#include "protocols/registry.h"
+#include "evidence/recorder.h"
+
+/* Only common_fuzz_stuff owns ordinary executions. Calibration/trim/sync do not. */
+static int icp_ordinary_execution, icp_pending_ordinary;
 
 #include "aflnet.h"
 #include <graphviz/gvc.h>
@@ -988,6 +993,13 @@ int send_over_network()
   struct sockaddr_in serv_addr;
   struct sockaddr_in local_serv_addr;
 
+  if (icp_ordinary_execution) {
+    kliter_t(lms) *planned;
+    icp_recorder_begin();
+    for (planned = kl_begin(kl_messages); planned != kl_end(kl_messages); planned = kl_next(planned))
+      icp_recorder_request(kl_val(planned)->mdata, kl_val(planned)->msize);
+  }
+
   //Clean up the server if needed
   if (cleanup_script) system(cleanup_script);
 
@@ -1058,7 +1070,11 @@ int send_over_network()
   }
 
   //retrieve early server response if needed
-  if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) goto HANDLE_RESPONSES;
+  { unsigned int before = response_buf_size;
+    int result = net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
+    if (icp_ordinary_execution) icp_recorder_window(-1, result, response_buf ? response_buf + before : NULL, response_buf_size - before, 0);
+    if (result) goto HANDLE_RESPONSES;
+  }
 
   //write the request messages
   kliter_t(lms) *it;
@@ -1066,6 +1082,7 @@ int send_over_network()
 
   for (it = kl_begin(kl_messages); it != kl_end(kl_messages); it = kl_next(it)) {
     n = net_send(sockfd, timeout, kl_val(it)->mdata, kl_val(it)->msize);
+    if (icp_ordinary_execution) icp_recorder_sent(messages_sent, n);
     messages_sent++;
 
     //Allocate memory to store new accumulated response buffer size
@@ -1078,8 +1095,9 @@ int send_over_network()
 
     //retrieve server response
     u32 prev_buf_size = response_buf_size;
-    if (net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size)) {
-      goto HANDLE_RESPONSES;
+    { int result = net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
+      if (icp_ordinary_execution) icp_recorder_window(messages_sent - 1, result, response_buf ? response_buf + prev_buf_size : NULL, response_buf_size - prev_buf_size, 0);
+      if (result) goto HANDLE_RESPONSES;
     }
 
     //Update accumulated response buffer size
@@ -1093,7 +1111,10 @@ int send_over_network()
 
 HANDLE_RESPONSES:
 
-  net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
+  { unsigned int before = response_buf_size;
+    int result = net_recv(sockfd, timeout, poll_wait_msecs, &response_buf, &response_buf_size);
+    if (icp_ordinary_execution) icp_recorder_window((int)messages_sent - 1, result, response_buf ? response_buf + before : NULL, response_buf_size - before, 1);
+  }
 
   if (messages_sent > 0 && response_bytes != NULL) {
     response_bytes[messages_sent - 1] = response_buf_size;
@@ -3312,6 +3333,7 @@ static u8 run_target(char** argv, u32 timeout) {
   setitimer(ITIMER_REAL, &it, NULL);
 
   total_execs++;
+  if (icp_ordinary_execution) icp_recorder_end();
 
   /* Any subsequent operations on trace_bits must not be moved by the
      compiler below this point. Past this location, trace_bits[] behave
@@ -3996,7 +4018,15 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
 
-    if (!(hnb = has_new_bits(virgin_bits))) {
+    hnb = has_new_bits(virgin_bits);
+    /* Commit before the hnb=0 return AND inline calibration overwrites buffers.
+     * run_target has already disabled its timer; IPC backpressure is not a hang. */
+    if (icp_pending_ordinary && fault == FAULT_NONE && !crash_mode) {
+      icp_pending_ordinary = 0;
+      if (icp_recorder_commit(hnb, state_sequence, state_count, trace_bits, MAP_SIZE))
+        FATAL("Evidence writer failed or record exceeded its configured limit");
+    }
+    if (!hnb) {
       if (crash_mode) total_crashes++;
       return 0;
     }
@@ -5485,7 +5515,9 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   /* End of AFLNet code */
 
+  icp_ordinary_execution = 1;
   fault = run_target(argv, exec_tmout);
+  icp_ordinary_execution = 0;
 
   //Update fuzz count, no matter whether the generated test is interesting or not
   if (state_aware_mode) update_fuzzs();
@@ -5514,7 +5546,9 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   /* This handles FAULT_ERROR for us: */
 
+  icp_pending_ordinary = (fault == FAULT_NONE);
   queued_discovered += save_if_interesting(argv, out_buf, len, fault);
+  icp_pending_ordinary = 0;
 
   if (!(stage_cur % stats_update_freq) || stage_cur + 1 == stage_max)
     show_stats();
@@ -9043,35 +9077,10 @@ int main(int argc, char** argv) {
       case 'P': /* protocol to be tested */
         if (protocol_selected) FATAL("Multiple -P options not supported");
 
-        if (!strcmp(optarg, "MQTT")) {
-          extract_requests = &extract_requests_mqtt;
-          extract_response_codes = &extract_response_codes_mqtt;
-        } else if (!strcmp(optarg, "MODBUS")) {
-          extract_requests = &extract_requests_modbus;
-          extract_response_codes = &extract_response_codes_modbus;
-        } else if (!strcmp(optarg, "IEC104")) {
-          extract_requests = &extract_requests_iec104;
-          extract_response_codes = &extract_response_codes_iec104;
-        } else if (!strcmp(optarg, "ETHERNETIP")) {
-          extract_requests = &extract_requests_ethernetip;
-          extract_response_codes = &extract_response_codes_ethernetip;
-        } else if (!strcmp(optarg, "BACNETIP")) {
-          extract_requests = &extract_requests_bacnetip;
-          extract_response_codes = &extract_response_codes_bacnetip;
-        } else if (!strcmp(optarg, "DNP3")) {
-          extract_requests = &extract_requests_dnp3;
-          extract_response_codes = &extract_response_codes_dnp3;
-        } else if (!strcmp(optarg, "OPCUACP")) {
-          extract_requests = &extract_requests_opcuacp;
-          extract_response_codes = &extract_response_codes_opcuacp;
-        } else if (!strcmp(optarg, "SLMPA")) {
-          extract_requests = &extract_requests_slmpa;
-          extract_response_codes = &extract_response_codes_slmpa;
-        } else if (!strcmp(optarg, "SLMPB")) {
-          extract_requests = &extract_requests_slmpb;
-          extract_response_codes = &extract_response_codes_slmpb;
-        } else {
-          FATAL("%s protocol is not supported yet!", optarg);
+        { const aflnet_protocol_adapter_t *adapter = aflnet_protocol_lookup(optarg);
+          if (!adapter) FATAL("%s protocol is not registered", optarg);
+          extract_requests = adapter->extract_requests;
+          extract_response_codes = adapter->extract_response_codes;
         }
 
         protocol_selected = 1;
@@ -9239,6 +9248,9 @@ int main(int argc, char** argv) {
     use_argv = argv + optind;
 
   perform_dry_run(use_argv);
+
+  if (getenv("AFLICP_DRY_RUN_ONLY")) goto stop_fuzzing;
+  if (icp_recorder_init()) FATAL("Cannot connect to evidence writer");
 
   cull_queue();
 
@@ -9515,6 +9527,8 @@ int main(int argc, char** argv) {
   save_auto();
 
 stop_fuzzing:
+
+  if (icp_recorder_finish()) FATAL("Evidence writer did not acknowledge a complete drain");
 
   SAYF(CURSOR_SHOW cLRD "\n\n+++ Testing aborted %s +++\n" cRST,
        stop_soon == 2 ? "programmatically" : "by user");

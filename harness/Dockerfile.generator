@@ -1,0 +1,11 @@
+# Build on an authorized Linux host, then pin the resulting local image ID in
+# config.yaml. No code-generation container receives network access at runtime.
+FROM python:3.11-slim
+WORKDIR /opt/aflicp
+COPY src/aflicp/__init__.py /opt/aflicp/aflicp/__init__.py
+COPY src/aflicp/seeds/__init__.py /opt/aflicp/aflicp/seeds/__init__.py
+COPY src/aflicp/seeds/sdk.py /opt/aflicp/aflicp/seeds/sdk.py
+COPY src/aflicp/seeds/worker.py /opt/aflicp/aflicp/seeds/worker.py
+ENV PYTHONPATH=/opt/aflicp PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+USER 65534:65534
+ENTRYPOINT ["python3"]

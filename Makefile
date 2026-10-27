@@ -44,6 +44,15 @@ endif
 
 COMM_HDR    = alloc-inl.h config.h debug.h types.h
 
+# Generated deterministically from protocols/protocols.json (no model at build time).
+-include protocols/active.mk
+ICP_OBJECTS = $(ADAPTER_OBJECTS) evidence/recorder.o
+protocols/active.mk protocols/active_registry.inc: protocols/protocols.json tools/registry.py
+	python3 tools/registry.py
+protocols/registry.o: protocols/active_registry.inc protocols/registry.h
+
+.DEFAULT_GOAL := all
+
 all: test_x86 $(PROGS) afl-as test_build all_done
 
 ifndef AFL_NO_X86
@@ -69,14 +78,17 @@ afl-as: afl-as.c afl-as.h $(COMM_HDR) | test_x86
 	$(CC) $(CFLAGS) $@.c -o $@ $(LDFLAGS)
 	ln -sf afl-as as
 
-afl-fuzz: afl-fuzz.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
-	$(CC) $(CFLAGS) $@.c aflnet.o -o $@ $(LDFLAGS)
+afl-fuzz: afl-fuzz.c $(COMM_HDR) aflnet.o aflnet.h $(ICP_OBJECTS) | test_x86
+	$(CC) $(CFLAGS) $@.c aflnet.o $(ICP_OBJECTS) -o $@ $(LDFLAGS)
 
-afl-replay: afl-replay.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
-	$(CC) $(CFLAGS) $@.c aflnet.o -o $@ $(LDFLAGS)
+afl-replay: afl-replay.c $(COMM_HDR) aflnet.o aflnet.h $(ADAPTER_OBJECTS) | test_x86
+	$(CC) $(CFLAGS) $@.c aflnet.o $(ADAPTER_OBJECTS) -o $@ $(LDFLAGS)
 
-aflnet-replay: aflnet-replay.c $(COMM_HDR) aflnet.o aflnet.h | test_x86
-	$(CC) $(CFLAGS) $@.c aflnet.o -o $@ $(LDFLAGS)
+aflnet-replay: aflnet-replay.c $(COMM_HDR) aflnet.o aflnet.h $(ADAPTER_OBJECTS) | test_x86
+	$(CC) $(CFLAGS) $@.c aflnet.o $(ADAPTER_OBJECTS) -o $@ $(LDFLAGS)
+
+adapter-observe: tools/adapter-observe.c $(COMM_HDR) aflnet.o $(ADAPTER_OBJECTS)
+	$(CC) $(CFLAGS) -I. $< aflnet.o $(ADAPTER_OBJECTS) -o $@
 
 afl-showmap: afl-showmap.c $(COMM_HDR) | test_x86
 	$(CC) $(CFLAGS) $@.c -o $@ $(LDFLAGS)

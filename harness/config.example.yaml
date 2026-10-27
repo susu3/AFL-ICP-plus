@@ -1,0 +1,111 @@
+protocol: MODBUS
+offline: false
+
+specifications:
+  - id: modbus-vendor-spec
+    path: ../specifications/modbus.pdf # Replace with a locally held PDF.
+
+paths:
+  engine_root: ..
+  user_seeds: ../seeds/C0               # Original user-supplied C0 only.
+  output_root: ../aflicp-output
+
+document:
+  render_scale: 2.0
+  vision_pages: all
+  ocr_backend: native
+  fallback_ocr_backend: tesseract
+  ocr_languages: eng
+  max_context_chars: 160000
+  max_page_image_bytes: 16777216
+  secondary_split_pages: 50
+  # Optional table/layout view. Keep null unless PP-StructureV3 is installed.
+  layout_backend: null
+
+llm:
+  api:
+    max_retries: 3                      # Operator-controlled; never hard-coded in retry loops.
+    connect_timeout_seconds: 30
+    request_timeout_seconds: 180
+    backoff_seconds: 1
+    max_backoff_seconds: 30
+    max_response_bytes: 10485760
+  profiles:
+    text: &text_profile
+      provider: compatible
+      endpoint: https://api.example.invalid/v1/chat/completions
+      model: REPLACE_WITH_MODEL
+      api_key_env: AFLICP_TEXT_API_KEY # Replace with a shell environment variable name; no secret in this file.
+    vision:
+      <<: *text_profile
+      api_key_env: AFLICP_VISION_API_KEY
+    coding:
+      <<: *text_profile
+      api_key_env: AFLICP_CODING_API_KEY
+    reasoning:
+      <<: *text_profile
+      api_key_env: AFLICP_REASONING_API_KEY
+
+repair:
+  specification_max_retries: 3
+  adapter_max_retries: 3
+  generator_max_retries: 3
+
+target:
+  id: libmodbus-local-simulator
+  recipe: libmodbus
+  repository: https://github.com/stephane/libmodbus
+  ref: REPLACE_WITH_IMMUTABLE_COMMIT_OR_TAG
+  build_image: REPLACE_WITH_LOCALLY_BUILT_PINNED_LINUX_LLVM_IMAGE
+  host: 127.0.0.1
+  port: 1502
+  transport: tcp
+  build_timeout_seconds: 1800
+  build_memory_mb: 4096
+  build_cpus: 2
+
+seeds:
+  random_seed: 12345
+  candidate_budget: 1000
+  preferred_corpus_size: 200
+  max_sequence_messages: 16
+  max_seed_bytes: 1048576
+  sandbox:
+    image: aflicp-generator:local
+    cpu_limit: 1
+    memory_mb: 256
+    timeout_seconds: 60
+
+campaign:
+  duration_seconds: 3600
+  execution_timeout_ms: 1000
+  memory_limit_mb: 100
+  startup_wait_us: 10000
+  socket_timeout_us: 1000
+  poll_wait_ms: 1
+  stop_timeout_seconds: 30
+  state_selection: 2
+  seed_selection: 1
+  seed_schedule: 1
+  feedback: 3
+  aflnet_arguments: []
+
+evidence:
+  enabled: true
+  periodic_interval: 1000
+  queue_capacity_bytes: 1048576
+  max_record_bytes: 16777216
+  pack_segment_bytes: 67108864
+  writer_stall_timeout_seconds: 120
+  backpressure: block
+  save_coverage_bitmap: true
+
+analysis:
+  replay_count: 3
+  max_records: 100
+  require_source_evidence: true
+
+experiment:
+  repetitions: 3
+
+reuse: {}

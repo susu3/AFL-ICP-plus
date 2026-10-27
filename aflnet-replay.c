@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include "alloc-inl.h"
 #include "aflnet.h"
+#include "protocols/registry.h"
 
 #define server_wait_usecs 10000
 
@@ -40,16 +41,10 @@ int main(int argc, char* argv[])
     exit(1);
   }
   
-  if (!strcmp(argv[2], "MQTT")) extract_response_codes = &extract_response_codes_mqtt;
-  else if (!strcmp(argv[2], "IEC104")) extract_response_codes = &extract_response_codes_iec104;
-  else if (!strcmp(argv[2], "ETHERNETIP")) extract_response_codes = &extract_response_codes_ethernetip;
-  else if (!strcmp(argv[2], "MODBUS")) extract_response_codes = &extract_response_codes_modbus;
-  else if (!strcmp(argv[2], "BACNETIP")) extract_response_codes = &extract_response_codes_bacnetip;
-  else if (!strcmp(argv[2], "DNP3")) extract_response_codes = &extract_response_codes_dnp3;
-  else if (!strcmp(argv[2], "OPCUACP")) extract_response_codes = &extract_response_codes_opcuacp;
-  else if (!strcmp(argv[2], "SLMPA")) extract_response_codes = &extract_response_codes_slmpa;
-  else if (!strcmp(argv[2], "SLMPB")) extract_response_codes = &extract_response_codes_slmpb;  
-else {fprintf(stderr, "[AFLNet-replay] Protocol %s has not been supported yet!\n", argv[2]); exit(1);}
+  { const aflnet_protocol_adapter_t *adapter = aflnet_protocol_lookup(argv[2]);
+    if (!adapter) { fprintf(stderr, "[AFLNet-replay] Protocol %s is not registered!\n", argv[2]); exit(1); }
+    extract_response_codes = adapter->extract_response_codes;
+  }
 
   portno = atoi(argv[3]);
 
