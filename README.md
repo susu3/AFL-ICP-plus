@@ -63,20 +63,20 @@ The target manager currently supports the known libmodbus recipe and an explicit
 
 ## 2. Installation
 
-The recommended deployment baseline is an isolated **x86-64 Ubuntu 20.04** host, matching the AFLNet-derived build environment. The Linux engine build, local sandbox, target build, and complete campaign have not yet been validated in this macOS development workspace; treat the current tree as a research prototype until the Linux acceptance steps pass.
+The current deployment target is an isolated **x86-64 Ubuntu 26.04 LTS** host. Upstream AFLNet documents testing on Ubuntu 18.04 and 16.04, not 26.04; the engine is based on portable Linux/POSIX facilities, but compatibility with this newer OS must be established by building and running the acceptance checks below. In particular, modern LLVM no longer suits the old loadable LLVM pass used by the historical build, so AFL-ICP+ defaults to Clang's `trace-pc-guard` instrumentation mode. The Linux engine build, sandbox, target build, and complete campaign have not yet been validated in this macOS development workspace; do not treat the 26.04 adaptation as completed host acceptance.
 
 ### Prerequisites
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  build-essential clang-10 llvm-10 llvm-10-dev make \
+  build-essential clang make \
   graphviz libgraphviz-dev libcap-dev \
   autoconf automake libtool pkg-config \
   git python3 python3-venv python3-pip tesseract-ocr bubblewrap
 ```
 
-The normal installation and fuzzing path does **not** require Docker. `bubblewrap` provides the local no-network sandbox for generated seed code; the Modbus target is compiled on the host with the AFLNet LLVM wrapper. Python 3.8 is the Ubuntu 20.04 system interpreter supported by this package. Run `aflicp` as an ordinary, unprivileged account (the generator sandbox intentionally refuses root); Dockerfiles remain available only as an optional later comparison/reproducibility facility.
+The normal installation and fuzzing path does **not** require Docker. `bubblewrap` provides the local no-network sandbox for generated seed code; the Modbus target is compiled on the host with the AFLNet LLVM wrapper. Ubuntu 26.04's system Python is used in a virtual environment; the harness requires Python 3.8 or later and its PDF dependency is compatible with current Python releases. Run `aflicp` as an ordinary, unprivileged account (the generator sandbox intentionally refuses root); Dockerfiles remain available only as an optional later comparison/reproducibility facility.
 
 ### Install AFL-ICP+
 
@@ -87,16 +87,18 @@ cd AFL-ICP-plus
 # Keep the Python virtual environment outside the engine source tree.
 python3 -m venv ../.venv-aflicp
 source ../.venv-aflicp/bin/activate
-python -m pip install --upgrade "pip<25"
+python -m pip install --upgrade pip
 python -m pip install -e ./harness
 ```
 
-Build the C engine and LLVM instrumentation with the Ubuntu 20.04 toolchain:
+Build the C engine and modern LLVM `trace-pc-guard` instrumentation:
 
 ```bash
-make -j"$(nproc)" all
-make -C llvm_mode LLVM_CONFIG=llvm-config-10 CC=clang-10 CXX=clang++-10
+make AFL_NO_X86=1 CC=clang -j"$(nproc)" all
+make -C llvm_mode AFL_TRACE_PC=1 CC=clang CXX=clang++
 ```
+
+This modern mode does not support `AFL_INST_RATIO`; leave that environment variable unset when building the instrumented target.
 
 Optional layout/table OCR support:
 
@@ -123,7 +125,7 @@ Configure at least:
 2. `paths.user_seeds`: the original C0 directory; `paths.engine_root` should point to the repository root; `paths.output_root` should be a separate run-output directory.
 3. `protocol: MODBUS` for the initial end-to-end workflow.
 4. The `text`, `vision`, `coding`, and `reasoning` profiles, including provider, endpoint, model, and API-key environment variable name.
-5. `target`: the supported `libmodbus` recipe with an immutable source revision; it is built locally by default. Keep the Ubuntu 20.04 compiler fields at `clang-10` / `llvm-config-10` unless you have validated another toolchain. An explicitly reviewed local executable is also supported. Keep the configured endpoint on loopback/private lab networking.
+5. `target`: the supported `libmodbus` recipe with an immutable source revision; it is built locally by default. Keep `engine_cc`, `llvm_cc`, and `llvm_cxx` aligned with the installed Clang toolchain, and use `instrumentation_mode: trace-pc-guard` on Ubuntu 26.04. An explicitly reviewed local executable is also supported. Keep the configured endpoint on loopback/private lab networking.
 6. `campaign`, `evidence`, `analysis`, and `experiment` parameters, including run duration, retry budgets, periodic sampling interval, replay count, and repetitions.
 
 Do not store API key values in YAML or commit `harness/config.yaml`. If all four profiles use the same key, set each profile's `api_key_env` to `AFLICP_API_KEY` and export it in the current shell:
@@ -247,7 +249,7 @@ The README describes the research method while distinguishing implementation lim
 | Feedback-driven protocol adaptation | Adapter synthesis and engine compilation are implemented; Modbus is the primary new end-to-end path, while other registry entries are inherited adapters and need protocol-specific validation. |
 | Programmatic seed synthesis | A generated Python seed program runs in a constrained no-network bubblewrap sandbox by default and produces message/sequence candidates. Docker is optional for later controlled comparisons. Current cleanup removes empty/failed files and byte-identical duplicates; it does not run `afl-tmin`/`afl-cmin` or claim behavior-preserving minimization. |
 | Record-then-check conformance analysis | New-coverage and periodic evidence recording, replay, source-grounded model review, and finding gates are implemented. AFLNet retains crash/hang artifacts; complete sanitizer-based crash attribution and analysis of every crash/hang are not implemented. |
-| Linux end-to-end validation | Not yet completed in this development workspace. Ubuntu 20.04 engine/LLVM builds, bubblewrap execution, local target build and dry-run, a full campaign, and replay must be acceptance-tested on the authorized Linux lab host. |
+| Linux end-to-end validation | Not yet completed in this development workspace. Ubuntu 26.04 engine/LLVM builds, bubblewrap execution, local target build and dry-run, a full campaign, and replay must be acceptance-tested on the authorized Linux lab host. |
 
 ## 6. Isolation and attribution
 

@@ -124,12 +124,22 @@ def build_engine(store, source, module):
     command([make, "-j1", "afl-showmap", "afl-fuzz", "afl-replay", "aflnet-replay", "CC=" + cc], cwd=root,
             timeout=store.config.get("target", {}).get("engine_build_timeout_seconds", 1800),
             log=store.root / "adapter" / "engine-build.log")
-    llvm_cc = store.config.get("target", {}).get("llvm_cc", "clang")
-    llvm_cxx = store.config.get("target", {}).get("llvm_cxx", "clang++")
-    llvm_config = store.config.get("target", {}).get("llvm_config", "llvm-config")
-    command([make, "-j1", "../afl-clang-fast", "../afl-llvm-pass.so", "../afl-llvm-rt.o",
-             "CC=" + llvm_cc, "CXX=" + llvm_cxx, "LLVM_CONFIG=" + llvm_config], cwd=root / "llvm_mode",
-            timeout=store.config.get("target", {}).get("engine_build_timeout_seconds", 1800),
+    target_config = store.config.get("target", {})
+    llvm_cc = target_config.get("llvm_cc", "clang")
+    llvm_cxx = target_config.get("llvm_cxx", "clang++")
+    instrumentation_mode = target_config.get("instrumentation_mode", "trace-pc-guard")
+    if instrumentation_mode == "trace-pc-guard":
+        # Use compiler-provided SanitizerCoverage callbacks. The old loadable
+        # LLVM pass depends on legacy LLVM APIs and is not compatible with the
+        # modern LLVM shipped by current Ubuntu releases.
+        llvm_args = ["AFL_TRACE_PC=1", "CC=" + llvm_cc, "CXX=" + llvm_cxx]
+    elif instrumentation_mode == "legacy-pass":
+        llvm_config = target_config.get("llvm_config", "llvm-config")
+        llvm_args = ["CC=" + llvm_cc, "CXX=" + llvm_cxx, "LLVM_CONFIG=" + llvm_config]
+    else:
+        raise ICPError("Unsupported target.instrumentation_mode: " + str(instrumentation_mode), "configuration")
+    command([make, "-j1"] + llvm_args + ["all"], cwd=root / "llvm_mode",
+            timeout=target_config.get("engine_build_timeout_seconds", 1800),
             log=store.root / "adapter" / "llvm-build.log")
     binaries = {}
     for name in ("afl-fuzz", "afl-replay", "aflnet-replay"):
@@ -142,7 +152,9 @@ def build_engine(store, source, module):
                "engine_source_tree_sha256": digest(tree_manifest(source)), "engine_snapshot_tree_sha256": digest(tree_manifest(root)),
                "platform": platform.platform(), "machine": platform.machine(),
                "adapter_module": str(target_module), "adapter_sha256": file_hash(target_module),
-               "registry_sha256": file_hash(registry_path), "cc": cc, "binaries": binaries,
+               "registry_sha256": file_hash(registry_path), "cc": cc,
+               "llvm_cc": llvm_cc, "llvm_cxx": llvm_cxx,
+               "instrumentation_mode": instrumentation_mode, "binaries": binaries,
                "adapter_manifest": json.loads((module.parent / (protocol.lower() + ".state.json")).read_text())}
     save_json(store.root / "adapter" / "build-profile.json", profile)
     store.register("engine", root, "adapter_build", [store.manifest["artifacts"]["adapter_source"]["artifact_id"]])

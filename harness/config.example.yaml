@@ -55,10 +55,10 @@ target:
   id: libmodbus-local-simulator
   recipe: libmodbus
   build_backend: local               # Default: build with the host Ubuntu toolchain; Docker is optional.
-  engine_cc: clang-10
-  llvm_cc: clang-10
-  llvm_cxx: clang++-10
-  llvm_config: llvm-config-10
+  engine_cc: clang
+  llvm_cc: clang
+  llvm_cxx: clang++
+  instrumentation_mode: trace-pc-guard # Modern LLVM; avoids the legacy LLVM pass plugin.
   repository: https://github.com/stephane/libmodbus
   ref: REPLACE_WITH_IMMUTABLE_COMMIT_OR_TAG
   host: 127.0.0.1

@@ -7,7 +7,7 @@ name = "aflicp-harness"
 version = "0.1.0"
 description = "Source-grounded, offline-first ICS protocol fuzzing harness"
 requires-python = ">=3.8"
-dependencies = ["PyYAML>=6,<7", "PyMuPDF>=1.24,<1.24.12"]
+dependencies = ["PyYAML>=6,<7", "PyMuPDF>=1.24.12,<2"]
 
 [project.optional-dependencies]
 documents = []

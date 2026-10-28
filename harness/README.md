@@ -4,16 +4,20 @@ This directory contains the offline preparation/orchestration package. The AFLNe
 
 ## Host and package setup
 
-The primary deployment baseline is x86-64 Ubuntu 20.04, matching the AFLNet-derived engine. Install the C/LLVM toolchain, AFLNet build dependencies, `bubblewrap`, Python 3.8, and Tesseract when OCR fallback is needed. Docker is not required for the default workflow: the Modbus target builds locally with `afl-clang-fast`, and generated seed code runs in a no-network bubblewrap namespace. Run the harness as an ordinary unprivileged account; local seed isolation deliberately refuses root execution. This source workspace is macOS, so Linux engine/sandbox/target/campaign acceptance must be performed on the Linux host. For PDF text extraction, PyMuPDF is installed with the package; PP-StructureV3 is optional and needs local model files when used offline.
+The current deployment target is x86-64 Ubuntu 26.04 LTS. Upstream AFLNet's README reports testing on Ubuntu 18.04 and 16.04; it does not certify Ubuntu 26.04. AFL-ICP+ therefore uses the compiler-integrated `trace-pc-guard` mode, avoiding the legacy loadable LLVM pass plugin. Install the distro C/Clang toolchain, AFLNet build dependencies, `bubblewrap`, Python 3.14 (the system default) and Tesseract when OCR fallback is needed. The default instrumentation path does not require `llvm-config` or LLVM development headers. Docker is not required for the default workflow: the Modbus target builds locally with `afl-clang-fast`, and generated seed code runs in a no-network bubblewrap namespace. Run the harness as an ordinary unprivileged account; local seed isolation deliberately refuses root execution. This source workspace is macOS, so Linux engine/sandbox/target/campaign acceptance must be performed on the Linux host. For PDF text extraction, PyMuPDF is installed with the package; PP-StructureV3 is optional and needs local model files when used offline.
 
 Install into an isolated virtual environment with `python3 -m pip install -e .`. Optional table/layout OCR dependencies are installed with `python3 -m pip install -e '.[layout]'`. Build the C engine and LLVM instrumentation from the repository root:
 
 ```sh
-make -j"$(nproc)" all
-make -C llvm_mode LLVM_CONFIG=llvm-config-10 CC=clang-10 CXX=clang++-10
+make AFL_NO_X86=1 CC=clang -j"$(nproc)" all
+make -C llvm_mode AFL_TRACE_PC=1 CC=clang CXX=clang++
 ```
 
-Docker images are only needed for later experiments that intentionally compare containerized preparation. They are not built, pulled, or required by normal preparation/fuzzing. The optional Dockerfiles target Ubuntu 20.04 and can be selected with `target.build_backend: docker` / `seeds.sandbox.backend: docker`.
+`AFL_NO_X86=1` skips the legacy assembly-wrapper smoke test; the LLVM-mode build still runs its own compiler-instrumentation test. The default `target.instrumentation_mode` is `trace-pc-guard`. Keep `engine_cc`, `llvm_cc`, and `llvm_cxx` set to the installed Clang binaries in `harness/config.yaml`.
+
+`trace-pc-guard` does not support `AFL_INST_RATIO`; leave that environment variable unset when compiling the target.
+
+Docker images are only needed for later experiments that intentionally compare containerized preparation. They are not built, pulled, or required by normal preparation/fuzzing. The optional Dockerfiles target Ubuntu 26.04 and can be selected with `target.build_backend: docker` / `seeds.sandbox.backend: docker`.
 
 The example config is deliberately incomplete. Replace the PDF and C0 paths, target revision (the resolved commit is recorded), endpoint/model names, and environment-variable names. Never put API credentials directly in YAML. If opting into Docker comparisons, pin image digests and record image IDs; the harness never builds or pulls them automatically.
 
@@ -54,4 +58,4 @@ Provider profiles use OpenAI-compatible chat-completions or Anthropic messages A
 
 The first closed loop is `MODBUS` over TCP with a known libmodbus test-server recipe. Legacy ICS protocol adapters are retained in the registry, while generated protocol adapters are built as regular C modules selected by protocol name; adding another ICS protocol requires a reviewed protocol-specific parser/state encoding and a target recipe where needed. No protocol semantic behavior is invented when the PDF leaves it unspecified; unresolved source questions stop publication or confirmation.
 
-The evidence recorder and adapter registry are integrated into the engine clone. Ubuntu 20.04 compilation, a real PDF/model response, bubblewrap sandbox execution, local libmodbus build, dry-run against a locally configured target, campaign, and replay confirmation require the operator's authorized Linux lab environment and have not been run from this macOS implementation workspace.
+The evidence recorder and adapter registry are integrated into the engine clone. Ubuntu 26.04 compilation, a real PDF/model response, bubblewrap sandbox execution, local libmodbus build, dry-run against a locally configured target, campaign, and replay confirmation require the operator's authorized Linux lab environment and have not been run from this macOS implementation workspace.

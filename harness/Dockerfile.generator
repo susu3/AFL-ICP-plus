@@ -1,8 +1,8 @@
 # Build on an authorized Linux host, then pin the resulting local image ID in
 # config.yaml. No code-generation container receives network access at runtime.
-# Optional Ubuntu 20.04 comparison/reproducibility image; the default workflow
+# Optional Ubuntu 26.04 comparison/reproducibility image; the default workflow
 # uses host Python inside bubblewrap and does not build or require this image.
-FROM ubuntu:20.04
+FROM ubuntu:26.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends python3 && \
     rm -rf /var/lib/apt/lists/*
