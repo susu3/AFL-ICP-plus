@@ -1,4 +1,4 @@
-"""Runs inside the isolated generator container. The controller never imports generated code."""
+"""Runs inside the isolated generator sandbox. The controller never imports generated code."""
 import importlib.util
 import json
 import random

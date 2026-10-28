@@ -128,28 +128,47 @@ class TargetManager:
             else:
                 raise ICPError("Provide target.executable, target.source, or target.repository")
             patch_hash = _patch_modbus_server(source, int(self.target["port"]))
-            build_image = self.target.get("build_image")
-            docker = shutil.which("docker")
-            if not docker:
-                raise ICPError("A configured Docker runtime is required to build downloaded target source")
-            if not build_image:
-                raise ICPError("target.build_image must name the locally available pinned Linux/LLVM toolchain image")
-            image_id = command([docker, "image", "inspect", "--format", "{{.Id}}", build_image], timeout=20).strip()
-            if not image_id:
-                raise ICPError("Configured build image is unavailable")
             engine = Path(fuzzer).resolve().parent
-            if not (engine / "afl-clang-fast").is_file():
-                raise ICPError("Target recipe requires a built afl-clang-fast in engine snapshot")
-            uid = str(os.getuid()) + ":" + str(os.getgid())
-            script = ("cd /src && ./autogen.sh && CC=/engine/afl-clang-fast AFL_PATH=/engine ./configure --enable-static "
-                      "&& make clean all && cd tests && AFL_PATH=/engine /engine/afl-clang-fast random-test-server.c "
-                      "-I../src ../src/.libs/libmodbus.a -o server")
-            argv = [docker, "run", "--rm", "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges",
-                    "--pids-limit=256", "--memory=%dm" % self.target.get("build_memory_mb", 4096), "--cpus=%s" % self.target.get("build_cpus", 2),
-                    "--user", uid, "--env", "CC=/engine/afl-clang-fast", "--env", "AFL_PATH=/engine",
-                    "--mount", "type=bind,src=%s,dst=/src" % source.resolve(), "--mount",
-                    "type=bind,src=%s,dst=/engine,readonly" % engine, image_id, "/bin/sh", "-lc", script]
-            command(argv, timeout=self.target.get("build_timeout_seconds", 1800), log=target_root / "build.log")
+            afl_clang = engine / "afl-clang-fast"
+            if not afl_clang.is_file():
+                raise ICPError("Target recipe requires afl-clang-fast; build llvm_mode before target preparation")
+            build_backend = self.target.get("build_backend", "local")
+            build_image = self.target.get("build_image")
+            image_id = None
+            if build_backend == "local":
+                build_env = dict(os.environ)
+                build_env.update({"CC": str(afl_clang), "AFL_PATH": str(engine)})
+                timeout = self.target.get("build_timeout_seconds", 1800)
+                command(["./autogen.sh"], cwd=source, env=build_env, timeout=timeout,
+                        log=target_root / "build-autogen.log")
+                command(["./configure", "--enable-static"], cwd=source, env=build_env, timeout=timeout,
+                        log=target_root / "build-configure.log")
+                command(["make", "clean", "all"], cwd=source, env=build_env, timeout=timeout,
+                        log=target_root / "build-libmodbus.log")
+                command([str(afl_clang), "random-test-server.c", "-I../src", "../src/.libs/libmodbus.a", "-o", "server"],
+                        cwd=source / "tests", env=build_env, timeout=timeout, log=target_root / "build-server.log")
+            elif build_backend == "docker":
+                docker = shutil.which("docker")
+                if not docker:
+                    raise ICPError("Docker was selected for target building but is not installed")
+                if not build_image:
+                    raise ICPError("target.build_image is required when target.build_backend=docker")
+                image_id = command([docker, "image", "inspect", "--format", "{{.Id}}", build_image], timeout=20).strip()
+                if not image_id:
+                    raise ICPError("Configured build image is unavailable")
+                uid = str(os.getuid()) + ":" + str(os.getgid())
+                script = ("cd /src && ./autogen.sh && CC=/engine/afl-clang-fast AFL_PATH=/engine ./configure --enable-static "
+                          "&& make clean all && cd tests && AFL_PATH=/engine /engine/afl-clang-fast random-test-server.c "
+                          "-I../src ../src/.libs/libmodbus.a -o server")
+                argv = [docker, "run", "--rm", "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+                        "--pids-limit=256", "--memory=%dm" % self.target.get("build_memory_mb", 4096),
+                        "--cpus=%s" % self.target.get("build_cpus", 2), "--user", uid,
+                        "--env", "CC=/engine/afl-clang-fast", "--env", "AFL_PATH=/engine",
+                        "--mount", "type=bind,src=%s,dst=/src" % source.resolve(), "--mount",
+                        "type=bind,src=%s,dst=/engine,readonly" % engine, image_id, "/bin/sh", "-lc", script]
+                command(argv, timeout=self.target.get("build_timeout_seconds", 1800), log=target_root / "build.log")
+            else:
+                raise ICPError("Unsupported target build backend: " + str(build_backend), "configuration")
             executable = source / "tests/server"
             if not executable.is_file() or not os.access(executable, os.X_OK):
                 raise ICPError("Build did not create the native target server executable")
@@ -161,7 +180,8 @@ class TargetManager:
                    "repository": self.target.get("repository"), "requested_ref": self.target.get("ref"), "resolved_commit": commit,
                    "source_hash": self._source_hash(source), "recipe_version": "libmodbus-known-recipe-v1" if source else "prebuilt-v1",
                    "build_image_id": getattr(self, "image_id", self.target.get("build_image_id")),
-                   "build_profile": self.target.get("build_profile", "prebuilt"), "executable_path": str(executable),
+                   "build_backend": self.target.get("build_backend", "local") if source else "prebuilt",
+                   "build_profile": self.target.get("build_profile", "local" if source else "prebuilt"), "executable_path": str(executable),
                    "executable_hash": file_hash(executable), "launch_argv": self.argv,
                    "environment_env": {key: value["from_env"] for key, value in self.target.get("environment", {}).items()}, "transport": "tcp",
                    "host": self.target["host"], "port": self.target["port"], "startup_wait_us": self.config["campaign"]["startup_wait_us"],

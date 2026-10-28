@@ -1,6 +1,11 @@
 # Build on an authorized Linux host, then pin the resulting local image ID in
 # config.yaml. No code-generation container receives network access at runtime.
-FROM python:3.11-slim
+# Optional Ubuntu 20.04 comparison/reproducibility image; the default workflow
+# uses host Python inside bubblewrap and does not build or require this image.
+FROM ubuntu:20.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && \
+    rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/aflicp
 COPY src/aflicp/__init__.py /opt/aflicp/aflicp/__init__.py
 COPY src/aflicp/seeds/__init__.py /opt/aflicp/aflicp/seeds/__init__.py

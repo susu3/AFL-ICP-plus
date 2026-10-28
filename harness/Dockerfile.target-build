@@ -1,7 +1,7 @@
 # Convenience toolchain image for the pinned libmodbus recipe. For a
 # reproducible lab image, replace the base tag with a reviewed digest and pin
 # the resulting local image ID in target.build_image.
-FROM ubuntu:22.04
+FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     autoconf automake build-essential clang llvm llvm-dev libtool make pkg-config \

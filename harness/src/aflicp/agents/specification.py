@@ -88,10 +88,17 @@ def _cross_summary(bundle):
     result = {"protocol": bundle.protocol, "client": {}, "server": {}, "sources": {}}
     for role in ("client", "server"):
         schema = bundle.roles[role]
+        messages = []
+        for message in schema["packets"]["messages"]:
+            summary = {key: message.get(key) for key in
+                       ("message_id", "message_name", "response_to", "response_kind", "constraint_refs", "source_refs")}
+            summary["field_summary"] = [{"field_name": field["field_name"], "field_type": field["field_type"],
+                                         "field_length": field["field_length"],
+                                         "constraint_refs": field.get("constraint_refs", []),
+                                         "source_refs": field["source_refs"]} for field in message["fields"]]
+            messages.append(summary)
         result[role] = {
-            "messages": [{k: m.get(k) for k in ("message_id", "message_name", "response_to", "response_kind", "constraint_refs", "source_refs")}
-                         | {"field_summary": [{"field_name": f["field_name"], "field_type": f["field_type"], "field_length": f["field_length"],
-                                              "constraint_refs": f.get("constraint_refs", []), "source_refs": f["source_refs"]} for f in m["fields"]]} for m in schema["packets"]["messages"]],
+            "messages": messages,
             "states": schema["state_ast"]["states"], "transitions": schema["state_ast"]["transitions"],
             "constraints": [{k: c[k] for k in ("id", "owner", "kind", "message_refs", "state_refs", "related_constraints", "source_refs")} for c in schema["rules"]]}
     result["sources"] = {k: {"document_id": v["document_id"], "document_hash": v["document_hash"], "page_number": v["page_number"],

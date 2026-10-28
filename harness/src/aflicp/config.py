@@ -15,7 +15,7 @@ DEFAULTS = {
     "repair": {"specification_max_retries": 3, "adapter_max_retries": 3, "generator_max_retries": 3},
     "seeds": {"random_seed": 12345, "candidate_budget": 1000, "preferred_corpus_size": 200,
               "max_sequence_messages": 16, "max_seed_bytes": 1048576,
-              "sandbox": {"image": "aflicp-generator:local", "cpu_limit": 1, "memory_mb": 256, "timeout_seconds": 60}},
+              "sandbox": {"backend": "bubblewrap", "cpu_limit": 1, "memory_mb": 256, "timeout_seconds": 60}},
     "campaign": {"duration_seconds": 60, "execution_timeout_ms": 1000, "memory_limit_mb": 100,
                  "startup_wait_us": 10000, "socket_timeout_us": 1000, "poll_wait_ms": 1,
                  "stop_timeout_seconds": 30, "feedback": 3, "seed_schedule": 1, "aflnet_arguments": []},
@@ -23,7 +23,7 @@ DEFAULTS = {
                  "max_record_bytes": 16777216, "pack_segment_bytes": 67108864, "writer_stall_timeout_seconds": 120,
                  "backpressure": "block", "save_coverage_bitmap": True},
     "analysis": {"replay_count": 1, "max_records": 100, "require_source_evidence": True}, "experiment": {"repetitions": 1},
-    "reuse": {}, "target": {"host": "127.0.0.1", "port": 1502, "transport": "tcp"}, "paths": {}
+    "reuse": {}, "target": {"host": "127.0.0.1", "port": 1502, "transport": "tcp", "build_backend": "local"}, "paths": {}
 }
 
 
@@ -63,6 +63,11 @@ def validate(config):
         value = config["seeds"]["sandbox"].get(key)
         if type(value) not in (int, float) or value <= 0:
             errors.append("seeds.sandbox.%s must be positive" % key)
+    sandbox_backend = config["seeds"]["sandbox"].get("backend", "bubblewrap")
+    if sandbox_backend not in ("bubblewrap", "docker"):
+        errors.append("seeds.sandbox.backend must be bubblewrap or docker")
+    if sandbox_backend == "docker" and not config["seeds"]["sandbox"].get("image"):
+        errors.append("seeds.sandbox.image is required when backend=docker")
     positive("analysis", ["replay_count", "max_records"])
     positive("experiment", ["repetitions"])
     positive("repair", list(DEFAULTS["repair"]), True)
@@ -122,9 +127,12 @@ def validate(config):
         errors.append("libmodbus recipe requires target.source or target.repository")
     elif config["target"].get("repository") and not config["target"].get("ref"):
         errors.append("remote target.repository requires an immutable target.ref")
-    if (not config["target"].get("executable") and
-            (config["target"].get("source") or config["target"].get("repository")) and not config["target"].get("build_image")):
-        errors.append("target.build_image is required to build source in an isolated container")
+    build_backend = config["target"].get("build_backend", "local")
+    if build_backend not in ("local", "docker"):
+        errors.append("target.build_backend must be local or docker")
+    if (not config["target"].get("executable") and build_backend == "docker"
+            and not config["target"].get("build_image")):
+        errors.append("target.build_image is required when target.build_backend=docker")
     if not isinstance(config["specifications"], list) or not config["specifications"]:
         errors.append("at least one specification PDF is required")
     specs = config["specifications"] if isinstance(config["specifications"], list) else []

@@ -1,17 +1,16 @@
 # syntax=docker/dockerfile-upstream:master-labs
-FROM ubuntu:18.04
+# Optional Ubuntu 20.04 comparison image. The normal AFL-ICP+ install/build/run
+# workflow does not require Docker.
+FROM ubuntu:20.04
 
-RUN apt-get -y update && \
-    apt-get -y install sudo \
-    apt-utils \
-    build-essential \
-    openssl \
-    clang \
-    graphviz-dev \
-    libcap-dev
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential clang-10 llvm-10 llvm-10-dev make git \
+    graphviz libgraphviz-dev libcap-dev libssl-dev ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 # Download and compile AFLNet
-ENV LLVM_CONFIG="llvm-config-6.0"
+ENV LLVM_CONFIG="llvm-config-10"
 
 ADD --keep-git-dir=true https://github.com/aflnet/aflnet.git /opt/aflnet
 WORKDIR /opt/aflnet

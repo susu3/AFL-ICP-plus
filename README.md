@@ -63,20 +63,20 @@ The target manager currently supports the known libmodbus recipe and an explicit
 
 ## 2. Installation
 
-The recommended deployment is an isolated x86-64 Ubuntu Linux host. The Linux engine build, Docker sandbox, target build, and complete campaign have not yet been validated in this macOS development workspace; treat the current tree as a research prototype until the Linux acceptance steps pass.
+The recommended deployment baseline is an isolated **x86-64 Ubuntu 20.04** host, matching the AFLNet-derived build environment. The Linux engine build, local sandbox, target build, and complete campaign have not yet been validated in this macOS development workspace; treat the current tree as a research prototype until the Linux acceptance steps pass.
 
 ### Prerequisites
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  build-essential clang llvm llvm-dev make \
+  build-essential clang-10 llvm-10 llvm-10-dev make \
   graphviz libgraphviz-dev libcap-dev \
   autoconf automake libtool pkg-config \
-  git python3 python3-venv tesseract-ocr
+  git python3 python3-venv python3-pip tesseract-ocr bubblewrap
 ```
 
-Docker Engine is required for the constrained seed-generator sandbox and target build. Install it using the official instructions for the server distribution: [Ubuntu](https://docs.docker.com/engine/install/ubuntu/) or [Debian](https://docs.docker.com/engine/install/debian/). The account running AFL-ICP+ must be allowed to access the Docker daemon.
+The normal installation and fuzzing path does **not** require Docker. `bubblewrap` provides the local no-network sandbox for generated seed code; the Modbus target is compiled on the host with the AFLNet LLVM wrapper. Python 3.8 is the Ubuntu 20.04 system interpreter supported by this package. Run `aflicp` as an ordinary, unprivileged account (the generator sandbox intentionally refuses root); Dockerfiles remain available only as an optional later comparison/reproducibility facility.
 
 ### Install AFL-ICP+
 
@@ -87,8 +87,15 @@ cd AFL-ICP-plus
 # Keep the Python virtual environment outside the engine source tree.
 python3 -m venv ../.venv-aflicp
 source ../.venv-aflicp/bin/activate
-python -m pip install --upgrade pip
+python -m pip install --upgrade "pip<25"
 python -m pip install -e ./harness
+```
+
+Build the C engine and LLVM instrumentation with the Ubuntu 20.04 toolchain:
+
+```bash
+make -j"$(nproc)" all
+make -C llvm_mode LLVM_CONFIG=llvm-config-10 CC=clang-10 CXX=clang++-10
 ```
 
 Optional layout/table OCR support:
@@ -116,7 +123,7 @@ Configure at least:
 2. `paths.user_seeds`: the original C0 directory; `paths.engine_root` should point to the repository root; `paths.output_root` should be a separate run-output directory.
 3. `protocol: MODBUS` for the initial end-to-end workflow.
 4. The `text`, `vision`, `coding`, and `reasoning` profiles, including provider, endpoint, model, and API-key environment variable name.
-5. `target`: the supported `libmodbus` recipe with an immutable source revision and local build image ID, or an explicitly reviewed local executable. Keep the configured endpoint on loopback/private lab networking.
+5. `target`: the supported `libmodbus` recipe with an immutable source revision; it is built locally by default. Keep the Ubuntu 20.04 compiler fields at `clang-10` / `llvm-config-10` unless you have validated another toolchain. An explicitly reviewed local executable is also supported. Keep the configured endpoint on loopback/private lab networking.
 6. `campaign`, `evidence`, `analysis`, and `experiment` parameters, including run duration, retry budgets, periodic sampling interval, replay count, and repetitions.
 
 Do not store API key values in YAML or commit `harness/config.yaml`. If all four profiles use the same key, set each profile's `api_key_env` to `AFLICP_API_KEY` and export it in the current shell:
@@ -127,9 +134,9 @@ printf '\n'
 export AFLICP_API_KEY
 ```
 
-### Build local Docker images
+### Optional Docker images for later comparison experiments
 
-Build the seed-generator sandbox and the libmodbus target-build image, then copy their image IDs into `seeds.sandbox.image` and `target.build_image` in `harness/config.yaml`:
+This step is **not part of ordinary installation or fuzzing**. Only use it when a later comparison experiment explicitly requires containerized preparation. Select `docker` for the relevant backend in `harness/config.yaml`, then build the image and pin its local image ID:
 
 ```bash
 cd harness
@@ -192,7 +199,7 @@ mkdir -p "$HOME/aflicp-data/specs" "$HOME/aflicp-data/seeds/C0"
 
 ### Step 2. Configure the Modbus run
 
-Copy and edit the example config as described above. Set `protocol` to `MODBUS`, point `specifications` to the local PDF, point `paths.user_seeds` to `$HOME/aflicp-data/seeds/C0`, and place run outputs outside the checkout. Configure a pinned libmodbus source revision, the local Docker image IDs, and an unused loopback port such as `127.0.0.1:1502`. Set LLM credentials through the configured environment variable names.
+Copy and edit the example config as described above. Set `protocol` to `MODBUS`, point `specifications` to the local PDF, point `paths.user_seeds` to `$HOME/aflicp-data/seeds/C0`, and place run outputs outside the checkout. Configure a pinned libmodbus source revision and an unused loopback port such as `127.0.0.1:1502`. Keep `target.build_backend: local` and `seeds.sandbox.backend: bubblewrap` for the default no-Docker workflow. Set LLM credentials through the configured environment variable names.
 
 ### Step 3. Validate and prepare
 
@@ -212,7 +219,7 @@ aflicp status --config harness/config.yaml --run-id "$RUN_ID"
 aflicp run --config harness/config.yaml --run-id "$RUN_ID"
 ```
 
-The target and campaign are launched as local processes by the harness/AFLNet on the Linux host. Docker is used for seed generation and target building, not as runtime isolation for the campaign. Use a disposable lab VM or equivalent isolation for binaries that are not fully trusted.
+The target and campaign are launched as local processes by the harness/AFLNet on the Linux host. The default workflow builds the target locally and uses bubblewrap for seed generation; neither mechanism isolates the fuzz campaign target itself. Use a disposable lab VM or equivalent isolation for binaries that are not fully trusted.
 
 ### Step 5. Review results
 
@@ -238,12 +245,12 @@ The README describes the research method while distinguishing implementation lim
 | Five-stage specification formalization | Implemented as a local-first PDF text/OCR and configured vision workflow with source-linked knowledge validation. It does not require Mistral OCR. |
 | Complementary universal schema | Client/server JSON packet schemas, Mermaid state machines, and structured Markdown dependencies are validated as a bundle with source references. |
 | Feedback-driven protocol adaptation | Adapter synthesis and engine compilation are implemented; Modbus is the primary new end-to-end path, while other registry entries are inherited adapters and need protocol-specific validation. |
-| Programmatic seed synthesis | A generated Python seed program runs in a constrained no-network Docker sandbox and produces message/sequence candidates. Current cleanup removes empty/failed files and byte-identical duplicates; it does not run `afl-tmin`/`afl-cmin` or claim behavior-preserving minimization. |
+| Programmatic seed synthesis | A generated Python seed program runs in a constrained no-network bubblewrap sandbox by default and produces message/sequence candidates. Docker is optional for later controlled comparisons. Current cleanup removes empty/failed files and byte-identical duplicates; it does not run `afl-tmin`/`afl-cmin` or claim behavior-preserving minimization. |
 | Record-then-check conformance analysis | New-coverage and periodic evidence recording, replay, source-grounded model review, and finding gates are implemented. AFLNet retains crash/hang artifacts; complete sanitizer-based crash attribution and analysis of every crash/hang are not implemented. |
-| Linux end-to-end validation | Not yet completed in this development workspace. Engine/LLVM builds, Docker execution, the local target dry-run, a full campaign, and replay must be acceptance-tested on the authorized Linux lab host. |
+| Linux end-to-end validation | Not yet completed in this development workspace. Ubuntu 20.04 engine/LLVM builds, bubblewrap execution, local target build and dry-run, a full campaign, and replay must be acceptance-tested on the authorized Linux lab host. |
 
 ## 6. Isolation and attribution
 
-Use AFL-ICP+ only against targets you own or are explicitly authorized to test. The harness accepts loopback/private IPv4 targets and does not scan for services. The fuzz campaign and replay communicate with the configured local target; they are not contained by the Docker build or seed-generation containers. Keep production networks and devices outside the test path.
+Use AFL-ICP+ only against targets you own or are explicitly authorized to test. The harness accepts loopback/private IPv4 targets and does not scan for services. The fuzz campaign and replay communicate with the configured local target; they are not contained by the seed-generation sandbox. Keep production networks and devices outside the test path.
 
 AFL-ICP+ extends [AFLNet](https://github.com/aflnet/aflnet). See [LICENSE](LICENSE) for licensing terms applicable to this repository and its components.
