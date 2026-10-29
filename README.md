@@ -31,13 +31,6 @@ su - aflicp
 git clone git@github.com:susu3/AFL-ICP-plus.git
 cd /home/aflicp/AFL-ICP-plus 
 
-# Prepare Python harness environment
-python3 -m venv ../.venv-aflicp
-source ../.venv-aflicp/bin/activate
-python -m pip install --upgrade pip
-python -m pip install --upgrade -e ./harness
-# 每次重新登录都先执行：source ../.venv-aflicp/bin/activate
-
 # Compile the source
 make -C llvm_mode clean
 make AFL_NO_X86=1 CC=clang -j"$(nproc)" all
@@ -66,23 +59,53 @@ AFL-ICP adds the following options to AFLNet. Run afl-fuzz --help to see all opt
 afl-fuzz -d -i <input_dir> -o <output_dir> -N <net_info> -P <protocol> -r <spec_file> -Y <mode> -Z <rate> [options] -- <target_binary> [target_args]
 ```
 ## 4. Tutorial - Fuzzing libplctag library
-### Step 1: LLM Configuration
-To enable LLM-assisted features, you need to configure the LLM API settings:
-1.  **Set the API Key**:
-    Export your API key as an environment variable:
-    ```bash
-    export LLM_API_KEY="your_api_key_here"
-    ```
-2.  **Configure the API Endpoint**:
-    The default API endpoint is configured for OpenRouter in `chat-llm.c`. If you need to use a different provider, modify the URL in `chat-llm.c` around line 180:
-    ```c
-    // chat-llm.c:180
-    char *url = "https://openrouter.ai/api/v1/chat/completions"; 
-    ``` 
-### Step 2: Protocol Specification Preparation
-Collect the industrial control protocol specification of the target protocol. We have provided several sample industrial protocol specifications in `sample_specs/PDF`: `IEC104.pdf`, `ethernetip.pdf`, `modbus.pdf`, `slmp.pdf`. 
+### Step 1: Prepare Python harness environment
+```bash
+python3 -m venv /home/aflicp/.venv-aflicp
+source /home/aflicp/.venv-aflicp/bin/activate
+python -m pip install --upgrade pip
+python -m pip install --upgrade -e ./harness
+# 若虚拟环境已经存在，跳过创建命令，只需启用它
+#source /home/aflicp/.venv-aflicp/bin/activate
+```
 
-### Step 3: Preprocessing (PDF to Markdown)
+### Step 2: Protocol specification and seeds preparation
+Collect the industrial control protocol specification and some seeds of the target protocol. We have provided several sample industrial protocol specifications in `AFL-ICP-plus/sample_specs/PDF`: `IEC104.pdf`, `ethernetip.pdf`, `modbus.pdf`, `slmp.pdf`. We also have provided several sample protocol seeds in `/AFL-ICP-plus/tutorials/XX/in-XX/`.
+
+
+### Step 3: 创建并编辑harness配置
+```bash
+cp harness/config.example.yaml harness/config.yaml
+vim harness/config.yaml
+```
+```YAML
+#将对应配置改为正确路径和待测目标协议设置（以modbus为例）
+protocol: MODBUS
+
+specifications:
+  - id: modbus-spec
+    path: ../sample_specs/PDF/modbus.pdf
+
+paths:
+  engine_root: ..
+  user_seeds: ../tutorials/libmodbus/in-modbus
+  output_root: ../aflicp-output
+
+target:
+  id: libmodbus-local-simulator
+  recipe: libmodbus
+  build_backend: local
+  engine_cc: clang
+  llvm_cc: clang
+  llvm_cxx: clang++
+  instrumentation_mode: trace-pc-guard
+  repository: https://github.com/stephane/libmodbus
+  ref: 5c14f13
+  host: 127.0.0.1
+  port: 1502
+  transport: tcp
+```
+
 Use the provided scripts to convert the PDF specification into Markdown format and filter the content for LLM processing.
 1.  **PDF to Markdown Conversion**:
     Configure API keys (Mistral OCR, LLM) and file paths in `parse_pdf_conversion.py`, then run the script:
