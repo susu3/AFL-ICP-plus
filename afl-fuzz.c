@@ -797,10 +797,10 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
         //Check also if the edge prevStateID->curStateID has been added
         Agnode_t *from, *to;
 		    Agedge_t *edge;
-		    from = agnode(ipsm, fromState, FALSE);
+		    from = agnode(ipsm, fromState, 0);
 		    if (!from) {
           //Add a node to the graph
-          from = agnode(ipsm, fromState, TRUE);
+          from = agnode(ipsm, fromState, 1);
           if (dry_run) agset(from,"color","blue");
           else agset(from,"color","red");
 
@@ -827,10 +827,10 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
           if (prevStateID != 0) expand_was_fuzzed_map(1, 0);
         }
 
-		    to = agnode(ipsm, toState, FALSE);
+		    to = agnode(ipsm, toState, 0);
 		    if (!to) {
           //Add a node to the graph
-          to = agnode(ipsm, toState, TRUE);
+          to = agnode(ipsm, toState, 1);
           if (dry_run) agset(to,"color","blue");
           else agset(to,"color","red");
 
@@ -858,10 +858,10 @@ void update_state_aware_variables(struct queue_entry *q, u8 dry_run)
         }
 
         //Check if an edge from->to exists
-		    edge = agedge(ipsm, from, to, NULL, FALSE);
+		    edge = agedge(ipsm, from, to, NULL, 0);
 		    if (!edge) {
           //Add an edge to the graph
-			    edge = agedge(ipsm, from, to, "new_edge", TRUE);
+			    edge = agedge(ipsm, from, to, "new_edge", 1);
           if (dry_run) agset(edge, "color", "blue");
           else agset(edge, "color", "red");
 		    }
