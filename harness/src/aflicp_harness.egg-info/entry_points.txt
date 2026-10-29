@@ -1,0 +1,2 @@
+[console_scripts]
+aflicp = aflicp.cli:main

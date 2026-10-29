@@ -1,0 +1,8 @@
+PyYAML<7,>=6
+PyMuPDF<2,>=1.24.12
+
+[documents]
+
+[layout]
+paddleocr<4,>=3
+paddlepaddle<4,>=3

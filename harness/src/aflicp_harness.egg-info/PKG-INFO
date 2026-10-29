@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: aflicp-harness
+Version: 0.1.0
+Summary: Source-grounded, offline-first ICS protocol fuzzing harness
+Requires-Python: >=3.8
+Requires-Dist: PyYAML<7,>=6
+Requires-Dist: PyMuPDF<2,>=1.24.12
+Provides-Extra: documents
+Provides-Extra: layout
+Requires-Dist: paddleocr<4,>=3; extra == "layout"
+Requires-Dist: paddlepaddle<4,>=3; extra == "layout"
