@@ -1,115 +1,145 @@
-protocol: MODBUS
-offline: false
+protocol: MODBUS # Must match a protocol adapter registered in this AFL-ICP+ build.
+offline: false # Set true only when every model/OCR/target source dependency is already cached locally.
 
 specifications:
   - id: modbus-vendor-spec
-    path: ../specifications/modbus.pdf # Replace with a locally held PDF.
+    path: ../specifications/modbus.pdf # REQUIRED: replace with an existing local PDF; add more list items for more PDFs.
+    # Each id must be unique. Paths are resolved relative to this config file.
 
 paths:
-  engine_root: ..
-  user_seeds: ../seeds/C0               # Original user-supplied C0 only.
-  output_root: ../aflicp-output
+  engine_root: .. # Normally the repository root; change only if using another AFLNet/AFL-ICP+ checkout.
+  user_seeds: ../seeds/C0 # REQUIRED: original user-provided C0, not the generated corpus; must contain nonempty files.
+  output_root: ../aflicp-output # REQUIRED: writable location for runs, caches, and reports; paths are config-relative.
 
 document:
-  render_scale: 2.0
-  vision_pages: all
-  ocr_backend: native
-  fallback_ocr_backend: tesseract
-  ocr_languages: eng
-  max_context_chars: 160000
-  max_page_image_bytes: 16777216
-  secondary_split_pages: 50
+  render_scale: 2.0 # Increase for small print; increases image size and vision-token usage.
+  vision_pages: all # Required by current implementation: every full page is sent for visual reconstruction.
+  ocr_backend: native # Prefer the PDF text layer; use tesseract/paddle to force OCR.
+  fallback_ocr_backend: tesseract # REQUIRED fallback when native text is missing/unreliable.
+  ocr_languages: eng # Confirm Tesseract language(s) match the specification; install matching language packs.
+  max_context_chars: 160000 # Raise only if a stage reports context overflow; also check provider model limits.
+  max_page_image_bytes: 16777216 # Upper bound for rendered page images sent to the vision profile.
+  secondary_split_pages: 50 # Maximum pages per semantic segmentation window.
   # Optional table/layout view. Keep null unless PP-StructureV3 is installed.
   layout_backend: null
+  # If using Paddle offline, configure local model paths and set layout_backend: paddle.
 
 llm:
   api:
-    max_retries: 3                      # Operator-controlled; never hard-coded in retry loops.
+    max_retries: 3 # REQUIRED decision: HTTP/API retry attempts (separate from repair.*_max_retries below).
     connect_timeout_seconds: 30
     request_timeout_seconds: 180
     backoff_seconds: 1
     max_backoff_seconds: 30
     max_response_bytes: 10485760
   profiles:
-    text: &text_profile
-      provider: compatible
-      endpoint: https://api.example.invalid/v1/chat/completions
-      model: REPLACE_WITH_MODEL
-      api_key_env: AFLICP_TEXT_API_KEY # Replace with a shell environment variable name; no secret in this file.
+    text:
+      provider: compatible # Choose compatible (OpenAI Chat Completions) or anthropic to match the provider API.
+      endpoint: https://api.deepseek.com/chat/completions # Full request URL, not only the provider base URL.
+      model: deepseek-v4-pro # REQUIRED: confirm model ID is available to your account/provider.
+      api_key_env: DEEPSEEK_API_KEY # REQUIRED: set this environment variable in the shell; never put the key here.
+      parameters:
+        response_format:
+          type: json_object # Keep only if the selected provider/model supports JSON mode.
+      # `parameters` is sent unchanged to the provider; change/remove provider-specific options when switching API dialects.
+      # Optional local cost estimate (input/output per 1M tokens); copy current rates and price period from provider docs:
+      # prices_per_million: {input: 0.0, output: 0.0, currency: USD, version: "replace-with-price-period"}
     vision:
-      <<: *text_profile
-      api_key_env: AFLICP_VISION_API_KEY
+      provider: compatible
+      endpoint: https://api.deepseek.com/chat/completions
+      model: deepseek-flash # REQUIRED: must accept image input; current DeepSeek V4-Pro is text-only.
+      api_key_env: DEEPSEEK_API_KEY
+      parameters:
+        response_format:
+          type: json_object
+      # Confirm this model supports both image_url input and JSON output for your provider endpoint.
     coding:
-      <<: *text_profile
-      api_key_env: AFLICP_CODING_API_KEY
+      provider: compatible
+      endpoint: https://api.deepseek.com/chat/completions
+      model: deepseek-v4-pro # Adapter/seed generator and their reviewers share this profile/model.
+      api_key_env: DEEPSEEK_API_KEY
+      parameters:
+        response_format:
+          type: json_object
     reasoning:
-      <<: *text_profile
-      api_key_env: AFLICP_REASONING_API_KEY
+      provider: compatible
+      endpoint: https://api.deepseek.com/chat/completions
+      model: deepseek-v4-pro # Finding proposal and review share this profile/model.
+      api_key_env: DEEPSEEK_API_KEY
+      parameters:
+        response_format:
+          type: json_object
+  # Confirm all four roles, endpoint paths, model IDs, image support, JSON mode, and key environment variables.
+  # If roles use different keys, give each profile its own api_key_env and export every named variable.
 
 repair:
-  specification_max_retries: 3
+  specification_max_retries: 3 # LLM repair/review rounds after a structured artifact is rejected.
   adapter_max_retries: 3
   generator_max_retries: 3
 
 target:
   id: libmodbus-local-simulator
-  recipe: libmodbus
+  recipe: libmodbus # First supported build recipe; other targets need a reviewed recipe or local executable.
   build_backend: local               # Default: build with the host Ubuntu toolchain; Docker is optional.
-  engine_cc: clang
+  engine_cc: clang # Must match the compiler used for this engine build.
   llvm_cc: clang
   llvm_cxx: clang++
   instrumentation_mode: trace-pc-guard # Modern LLVM; avoids the legacy LLVM pass plugin.
   repository: https://github.com/stephane/libmodbus
-  ref: REPLACE_WITH_IMMUTABLE_COMMIT_OR_TAG
-  host: 127.0.0.1
-  port: 1502
+  ref: REPLACE_WITH_COMMIT_SHA # REQUIRED: pin a reviewed commit for reproducibility; do not use a moving branch.
+  host: 127.0.0.1 # REQUIRED: only the authorized local/private lab target; never a public/production endpoint.
+  port: 1502 # Confirm this port is unused and matches the target launch configuration.
   transport: tcp
   build_timeout_seconds: 1800
   build_memory_mb: 4096
   build_cpus: 2
+  # For a prebuilt local target instead, configure target.executable and target.launch_argv.
+  # If the target needs runtime environment variables, use target.environment: {TARGET_VAR: {from_env: LOCAL_VAR}}.
 
 seeds:
-  random_seed: 12345
-  candidate_budget: 1000
-  preferred_corpus_size: 200
+  random_seed: 12345 # Fix for reproducibility; record any change between experiments.
+  candidate_budget: 1000 # Generation work budget; higher values can increase preparation time/API use.
+  preferred_corpus_size: 200 # Desired generated corpus scale; tune and report for experiments.
   max_sequence_messages: 16
   max_seed_bytes: 1048576
   sandbox:
     backend: bubblewrap              # Local no-network sandbox; does not require Docker.
+    # Root execution is refused by the local seed sandbox; run aflicp as an unprivileged user.
     cpu_limit: 1
     memory_mb: 256
     timeout_seconds: 60
 
 campaign:
-  duration_seconds: 3600
+  duration_seconds: 3600 # REQUIRED experiment choice: campaign wall-clock duration.
   execution_timeout_ms: 1000
   memory_limit_mb: 100
   startup_wait_us: 10000
   socket_timeout_us: 1000
   poll_wait_ms: 1
   stop_timeout_seconds: 30
+  # These selections control the AFLNet run; keep fixed and record them for fair comparisons.
   state_selection: 2
   seed_selection: 1
   seed_schedule: 1
   feedback: 3
-  aflnet_arguments: []
+  aflnet_arguments: [] # Optional extra flags only; do not override controller-owned input/output/target flags.
 
 evidence:
   enabled: true
-  periodic_interval: 1000
+  periodic_interval: 1000 # Periodic evidence sampling interval in executions; lower values increase evidence volume.
   queue_capacity_bytes: 1048576
   max_record_bytes: 16777216
   pack_segment_bytes: 67108864
   writer_stall_timeout_seconds: 120
-  backpressure: block
+  backpressure: block # Required by the current implementation; a full writer queue blocks the fuzzer.
   save_coverage_bitmap: true
 
 analysis:
   replay_count: 3
   max_records: 100
-  require_source_evidence: true
+  require_source_evidence: true # Keep true for source-grounded confirmed findings.
 
 experiment:
-  repetitions: 3
+  repetitions: 3 # Used by aflicp experiment; aflicp run starts one campaign only.
 
-reuse: {}
+reuse: {} # Optional stage reuse for previously validated, hash-matched artifacts; normally leave empty.
