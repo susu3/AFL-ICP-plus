@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from ..common import ICPError, atomic_write, canonical, digest, read_json, save_json
+from ..common import ICPError, atomic_write, canonical, digest, progress, read_json, save_json
 from ..knowledge.bundle import FILES, KnowledgeBundle, publish_bundle
 from ..llm.client import require_review
 from ..specification.documents import prepare_documents
@@ -110,6 +110,7 @@ def _cross_summary(bundle):
 def prepare(store, model):
     reused = store.config.get("reuse", {}).get("knowledge_bundle")
     if reused:
+        progress("Using the configured, validated specification-knowledge bundle.")
         bundle = KnowledgeBundle(reused)
         if bundle.protocol != store.config["protocol"]:
             raise ICPError("Reused knowledge bundle protocol differs from config")
@@ -118,8 +119,11 @@ def prepare(store, model):
         store.save()
         return bundle.root
 
+    progress("Starting PDF page processing, section detection, and relevance labeling.")
     sources, segments = prepare_documents(store.config, store.root, model)
     relevant = [segment for segment in segments if segment["relevance"] == "relevant"]
+    progress("Document processing complete: %d segment(s), %d relevant for protocol-knowledge extraction." %
+             (len(segments), len(relevant)))
     if not relevant:
         raise ICPError("No source segments were labeled relevant; complete specification is retained for diagnosis")
     previous, diagnostics = {}, []
@@ -128,12 +132,17 @@ def prepare(store, model):
     final_folder.mkdir(parents=True, exist_ok=False)
     save_json(final_folder / "sources.json", sources)
     contributions = []
-    for index, segment in enumerate(relevant):
+    extraction_interval = max(1, (len(relevant) + 9) // 10)
+    progress("Starting protocol-knowledge extraction and segment review for %d relevant segment(s)." % len(relevant))
+    for index, segment in enumerate(relevant, 1):
         segment_path = store.root / segment["markdown_path"]
         evidence = {identity: sources[identity] for identity in segment["source_refs"]}
         segment_diags = []
         for attempt in range(maximum + 1):
             try:
+                if index == 1 or index % extraction_interval == 0:
+                    progress("Knowledge extraction/review starting segment %d/%d: %s (attempt %d/%d)." %
+                             (index, len(relevant), segment["segment_id"], attempt + 1, maximum + 1))
                 result = model.call("text", "synthesis", {"protocol": store.config["protocol"], "segment": segment,
                     "source_evidence": evidence, "segment_markdown": segment_path.read_text(),
                     "prior_object_ids": previous, "diagnostics": segment_diags,
@@ -159,15 +168,22 @@ def prepare(store, model):
                         import re
                         ids.extend(re.findall(r"(?m)^## ([^\n]+)", value))
                 previous[segment["segment_id"]] = sorted(set(x for x in ids if x))
+                if index % extraction_interval == 0 or index == len(relevant):
+                    progress("Protocol-knowledge extraction/review progress: %d/%d relevant segments complete." %
+                             (index, len(relevant)))
                 break
             except (ICPError, ValueError, KeyError, TypeError) as exc:
                 item = store.diagnostic("specification_segment", exc, segment_id=segment["segment_id"], attempt=attempt)
                 segment_diags.append(item)
+                progress("Knowledge extraction/review attempt %d for %s failed: %s" %
+                         (attempt + 1, segment["segment_id"], str(exc)))
                 if attempt == maximum:
                     raise ICPError("Specification synthesis/review budget exhausted at " + segment["segment_id"]) from exc
 
+    progress("Merging extracted client/server schemas, state diagrams, and constraints.")
     _write_parts(final_folder, store.config["protocol"], contributions)
     try:
+        progress("Running deterministic cross-file and cross-role knowledge validation.")
         bundle = KnowledgeBundle(final_folder, store.config["protocol"], published=False)
     except ICPError as exc:
         store.diagnostic("knowledge_cross_validation", exc)
@@ -175,15 +191,18 @@ def prepare(store, model):
     final_review, review_diagnostics = None, []
     for attempt in range(maximum + 1):
         try:
+            progress("Running whole-bundle knowledge review (attempt %d/%d)." % (attempt + 1, maximum + 1))
             final_review = model.call("text", "knowledge_review", {"cross_schema_summary": _cross_summary(bundle),
                 "segment_review_ids": [{"segment_id": x["segment_id"], "review": x["review"]} for x in contributions],
                 "prior_review_diagnostics": review_diagnostics,
                 "scope": "Check whole-bundle cross-role identities, paired events, request-response associations, unique constraint ownership, and both-role behavior. Source-grounded clause checks were independently completed against each supplied page segment."})
             require_review(final_review)
+            progress("Whole-bundle knowledge review approved.")
             break
         except (ICPError, ValueError, KeyError, TypeError) as exc:
             diagnostic = store.diagnostic("knowledge_final_review", exc, attempt=attempt)
             review_diagnostics.append(diagnostic)
+            progress("Whole-bundle knowledge review attempt %d failed: %s" % (attempt + 1, str(exc)))
             if attempt == maximum:
                 raise ICPError("Whole-bundle reviewer did not approve within the configured retry budget") from exc
     review = final_review
@@ -191,4 +210,5 @@ def prepare(store, model):
     store.manifest["knowledge_bundle_id"] = published.manifest["bundle_id"]
     store.register("knowledge", final_folder, "specification_formalization_agent")
     store.save()
+    progress("Protocol knowledge bundle validated and published: %s." % published.manifest["bundle_id"])
     return final_folder

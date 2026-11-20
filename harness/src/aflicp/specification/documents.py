@@ -3,7 +3,7 @@ import json
 import re
 import shutil
 from pathlib import Path
-from ..common import ICPError, append_jsonl, atomic_write, command, digest, file_hash, save_json
+from ..common import ICPError, append_jsonl, atomic_write, command, digest, file_hash, progress, save_json
 
 
 def text_reliable(text):
@@ -81,7 +81,9 @@ def _semantic_boundaries(pages, config, model, document_id, root):
     if current:
         blocks.append(current)
     starts = set()
-    for block in blocks:
+    progress("Section detection: %d bounded page windows to analyze." % len(blocks))
+    window_interval = max(1, (len(blocks) + 3) // 4)
+    for index, block in enumerate(blocks, 1):
         first, last = block[0]["number"], block[-1]["number"]
         result = model.call("text", "segmentation", {"document_id": document_id,
             "page_range": {"start_page": first, "end_page": last},
@@ -98,20 +100,24 @@ def _semantic_boundaries(pages, config, model, document_id, root):
                              "page_number": value, "decision": "discarded boundary inside cross-page continuation"})
                 continue
             starts.add(value)
+        if index % window_interval == 0 or index == len(blocks):
+            progress("Section detection progress: %d/%d windows complete (latest PDF pages %d-%d)." %
+                     (index, len(blocks), first, last))
     return sorted(starts)
 
 
 def prepare_documents(config, root, model):
     try:
-        import fitz
+        import pymupdf
     except ImportError as exc:
         raise ICPError("Install the documents extra (PyMuPDF)", "dependency") from exc
     root = Path(root)
     docroot = root / "document"
-    sources, segments, registry, full = {}, [], [], []
+    sources, segments, registry, full_specification = {}, [], [], []
     if not config["specifications"]:
         raise ICPError("No specification PDFs configured", "configuration")
     for spec in config["specifications"]:
+        progress("Opening specification '%s': %s" % (spec["id"], spec["path"]))
         original = Path(spec["path"])
         sha = file_hash(original)
         snapshot = root / "sources" / (spec["id"] + ".pdf")
@@ -120,16 +126,20 @@ def prepare_documents(config, root, model):
             raise ICPError("Source PDF changed in an existing run")
         if not snapshot.exists():
             shutil.copy2(original, snapshot)
-        pdf = fitz.open(snapshot)
+        pdf = pymupdf.open(snapshot)
+        progress("Specification '%s' has %d PDF pages; rendering and reconstructing each page." %
+                 (spec["id"], len(pdf)))
         toc = pdf.get_toc()
         registry.append({**spec, "sha256": sha, "page_count": len(pdf), "toc": toc, "snapshot": str(snapshot)})
         pages = []
+        # Report roughly ten evenly spaced milestones, independent of protocol/PDF size.
+        page_interval = max(1, (len(pdf) + 9) // 10)
         for index, page in enumerate(pdf):
             number = index + 1
             page_id = "%s.p%05d" % (spec["id"], number)
             image = docroot / "screenshots" / (page_id + ".png")
             image.parent.mkdir(parents=True, exist_ok=True)
-            pix = page.get_pixmap(matrix=fitz.Matrix(config["document"]["render_scale"], config["document"]["render_scale"]), colorspace=fitz.csRGB, alpha=False)
+            pix = page.get_pixmap(matrix=pymupdf.Matrix(config["document"]["render_scale"], config["document"]["render_scale"]), colorspace=pymupdf.csRGB, alpha=False)
             atomic_write(image, pix.tobytes("png"))
             native = page.get_text("text", sort=True)
             atomic_write(docroot / "pages" / (page_id + ".native.md"), native)
@@ -168,6 +178,10 @@ def prepare_documents(config, root, model):
                           "image": str(image.relative_to(root)), "ocr_backend": backend,
                           "continues_from_previous": continuations["continues_from_previous"],
                           "continues_to_next": continuations["continues_to_next"]})
+            if number % page_interval == 0 or number == len(pdf):
+                progress("Page reconstruction progress for '%s': %d/%d pages complete." %
+                         (spec["id"], number, len(pdf)))
+        progress("Specification '%s': all %d pages rendered and reconstructed." % (spec["id"], len(pages)))
         # Preserve the PDF bookmark hierarchy when present, and independently
         # ask for semantic page boundaries in bounded overlapping-safe windows.
         anchors = [{"page": p, "heading": title, "level": level} for level, title, p in toc if 1 <= p <= len(pages)]
@@ -181,6 +195,7 @@ def prepare_documents(config, root, model):
         anchors.extend({"page": p, "heading": "Model-identified section boundary", "level": 1} for p in semantic_starts)
         starts = sorted(set([1] + [a["page"] for a in anchors]))
         consumed_until = 0
+        progress("Section detection for '%s' complete; building and relevance-labeling source segments." % spec["id"])
         for position, declared_start in enumerate(starts):
             start = max(declared_start, consumed_until + 1)
             if start > (starts[position + 1] - 1 if position + 1 < len(starts) else len(pages)):
@@ -199,8 +214,8 @@ def prepare_documents(config, root, model):
                 if page_chars > budget:
                     raise ICPError("A single rendered specification page exceeds the configured context budget; raise the limit or process that page with a larger-context model")
                 starts_heading = page["number"] in heading_pages and current and not page["continues_from_previous"]
-                full = current and (chars + page_chars > budget or len(current) >= config["document"]["secondary_split_pages"] or starts_heading)
-                if full and not current[-1]["continues_to_next"]:
+                chunk_is_full = current and (chars + page_chars > budget or len(current) >= config["document"]["secondary_split_pages"] or starts_heading)
+                if chunk_is_full and not current[-1]["continues_to_next"]:
                     chunks.append(current); current, chars = [], 0
                 current.append(page); chars += page_chars
             if current:
@@ -218,6 +233,9 @@ def prepare_documents(config, root, model):
                 sid = "%s.segment.%d-%d" % (spec["id"], first, last)
                 heading = [a["heading"] for a in anchors if a["page"] <= first][-4:]
                 body = "\n\n".join("<!-- %s / PDF page %d -->\n%s" % (spec["id"], p["number"], p["text"]) for p in chunk)
+                if not segments:
+                    progress("Relevance labeling started: first source segment %s (PDF pages %d-%d)." %
+                             (sid, first, last))
                 label = model.call("text", "relevance", {"segment_id": sid, "heading_path": heading, "markdown": body})
                 if label.get("relevance") not in ("relevant", "auxiliary"):
                     raise ICPError("Invalid relevance annotation")
@@ -235,11 +253,15 @@ def prepare_documents(config, root, model):
                 segments.append({"segment_id": sid, "document_id": spec["id"], "parent_segment_id": prior_segment,
                                  "heading_path": heading, "page_start": first, "page_end": last, "markdown_path": relative,
                                  "relevance": label["relevance"], "source_refs": source_ids})
-                full.append("# " + sid + " [" + label["relevance"] + "]\n" + body)
+                if len(segments) % 10 == 0:
+                    progress("Relevance labeling progress for '%s': %d segments complete (latest: %s, pages %d-%d)." %
+                             (spec["id"], len(segments), sid, first, last))
+                full_specification.append("# " + sid + " [" + label["relevance"] + "]\n" + body)
                 consumed_until = last
         pdf.close()
+        progress("Specification '%s' complete: %d source segment(s) labeled." % (spec["id"], len(segments)))
     save_json(docroot / "documents.json", registry)
     save_json(docroot / "sources.json", sources)
     atomic_write(docroot / "segments.jsonl", b"".join(json.dumps(s, ensure_ascii=False).encode() + b"\n" for s in segments))
-    atomic_write(docroot / "full_specification.md", "\n\n".join(full))
+    atomic_write(docroot / "full_specification.md", "\n\n".join(full_specification))
     return sources, segments

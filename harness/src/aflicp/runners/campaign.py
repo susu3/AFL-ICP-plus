@@ -5,7 +5,7 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from ..common import ICPError, atomic_write, command, file_hash, read_json, save_json
+from ..common import ICPError, atomic_write, command, file_hash, progress, read_json, save_json
 from .writer_client import WriterHandle
 
 
@@ -44,6 +44,7 @@ class CampaignRunner:
         return engine, target, fuzzer
 
     def validate_target(self):
+        progress("Starting representative interaction dry-run against the configured lab target.")
         engine, profile, fuzzer = self._preflight()
         output = self.store.root / "target" / "dry-run-validation"
         if output.exists():
@@ -69,6 +70,7 @@ class CampaignRunner:
         profile["validation_report"] = report
         save_json(self.store.root / "target" / "target-profile.json", profile)
         self.store.register("target_profile", self.store.root / "target" / "target-profile.json", "target_validation")
+        progress("Representative interaction validation passed.")
         return report
 
     @staticmethod
@@ -148,6 +150,8 @@ class CampaignRunner:
         self.store.manifest["active_campaign"] = campaign
         self.store.manifest["status"] = "campaign_running"
         self._persist_campaign(campaign)
+        progress("Starting AFLNet campaign %s for %d seconds against %s:%s." %
+                 (campaign_id, campaign["duration_seconds"], profile["host"], profile["port"]))
         try:
             stdout_path = self.store.root / "fuzz" / (campaign_id + ".stdout.log")
             stderr_path = self.store.root / "fuzz" / (campaign_id + ".stderr.log")
@@ -157,9 +161,16 @@ class CampaignRunner:
                 campaign["pid"] = process.pid
                 self._persist_campaign(campaign)
                 deadline = time.monotonic() + self.store.config["campaign"]["duration_seconds"]
+                last_progress = time.monotonic()
                 try:
                     while process.poll() is None and time.monotonic() < deadline:
                         writer.check()
+                        now = time.monotonic()
+                        if now - last_progress >= 600:
+                            elapsed = self.store.config["campaign"]["duration_seconds"] - max(0, deadline - now)
+                            progress("Fuzzing is running: %.0f/%d seconds elapsed; campaign output: %s." %
+                                     (elapsed, self.store.config["campaign"]["duration_seconds"], output))
+                            last_progress = now
                         time.sleep(min(1.0, max(0.05, deadline - time.monotonic())))
                     if process.poll() is None:
                         process.send_signal(signal.SIGINT)
@@ -207,4 +218,5 @@ class CampaignRunner:
         self.store.manifest["evidence_complete"] = not self.store.config["evidence"]["enabled"] or campaign["evidence"].get("status") == "complete"
         self.store.save()
         self._persist_campaign(campaign)
+        progress("Fuzzing campaign completed; output: %s." % output)
         return campaign

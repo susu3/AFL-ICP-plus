@@ -6,7 +6,7 @@ import subprocess
 import sys
 import platform
 from pathlib import Path
-from ..common import ICPError, atomic_write, command, digest, file_hash, save_json
+from ..common import ICPError, atomic_write, command, digest, file_hash, progress, save_json
 from ..llm.client import require_review
 
 
@@ -55,6 +55,7 @@ def prepare(store, model, bundle):
     protocol = store.config["protocol"]
     existing = store.config.get("reuse", {}).get("adapter_source")
     if existing:
+        progress("Loading the configured validated protocol adapter for %s." % protocol)
         source = Path(existing).resolve()
         gate_path = store.config.get("reuse", {}).get("adapter_validation")
         if not gate_path:
@@ -74,12 +75,15 @@ def prepare(store, model, bundle):
                 code = Path(existing).read_text()
                 encoding = {"source": "reused", "state_id_stability": "campaign"}
             else:
+                progress("Generating %s protocol adapter source with the coding model (attempt %d/%d)." %
+                         (protocol, attempt + 1, store.config["repair"]["adapter_max_retries"] + 1))
                 response = model.call("coding", "adapter", {"protocol": protocol,
                     "knowledge": bundle.select_context("response_parser"), "interface_header": (Path(store.config.get("paths", {}).get("engine_root", Path(__file__).parents[4])) / "protocols/adapter.h").read_text(),
                     "required_symbols": ["aflicp_%s_requests" % protocol.lower(), "aflicp_%s_responses" % protocol.lower()],
                     "diagnostics": store.tasks.get("adapter_diagnostics", [])})
                 code, encoding = response.get("source_code"), response.get("state_encoding")
             _syntax_gate(code, protocol)
+            progress("Reviewing generated %s adapter and state encoding." % protocol)
             review = model.call("coding", "adapter_review", {"source_code": code, "state_encoding": encoding,
                                "knowledge": bundle.select_context("response_parser"), "interface": "region_t request parser and uint32 response state parser"})
             require_review(review)
@@ -92,15 +96,18 @@ def prepare(store, model, bundle):
             save_json(source_dir / (protocol.lower() + ".state.json"), encoding)
             save_json(source_dir / (protocol.lower() + ".review.json"), review)
             store.register("adapter_source", module, "protocol_adaptation_agent", [bundle.manifest["bundle_id"]])
+            progress("Protocol adapter generated and approved: %s." % module)
             return module
         except (ICPError, OSError, ValueError, KeyError, TypeError) as exc:
             item = store.diagnostic("adapter", exc, attempt=attempt)
             store.tasks.setdefault("adapter_diagnostics", []).append(item)
             store.save()
+            progress("Adapter attempt %d failed: %s" % (attempt + 1, str(exc)))
     raise ICPError("Adapter generation/review budget exhausted")
 
 
 def build_engine(store, source, module):
+    progress("Preparing AFL-ICP engine snapshot and registering the generated adapter.")
     if not sys.platform.startswith("linux"):
         raise ICPError("AFLNet engine and instrumentation build require a Linux lab host; no macOS build fallback is configured", "platform")
     root = engine_snapshot(source, store.root / "engine")
@@ -115,6 +122,7 @@ def build_engine(store, source, module):
     registry["protocols"].append({"name": protocol, "variant": "generated", "source": str(target_module.relative_to(root)), **symbols,
                                  "state_encoding": json.loads((module.parent / (protocol.lower() + ".state.json")).read_text())})
     save_json(registry_path, registry)
+    progress("Building AFL-ICP engine binaries with %s." % store.config.get("target", {}).get("engine_cc", "clang"))
     command([store.config.get("paths", {}).get("python", "python3"), "tools/registry.py"], cwd=root,
             timeout=30, log=store.root / "adapter" / "registry-generation.log")
     make = shutil.which("make")
@@ -138,6 +146,7 @@ def build_engine(store, source, module):
         llvm_args = ["CC=" + llvm_cc, "CXX=" + llvm_cxx, "LLVM_CONFIG=" + llvm_config]
     else:
         raise ICPError("Unsupported target.instrumentation_mode: " + str(instrumentation_mode), "configuration")
+    progress("Building LLVM instrumentation wrappers in %s mode." % instrumentation_mode)
     command([make, "-j1"] + llvm_args + ["all"], cwd=root / "llvm_mode",
             timeout=target_config.get("engine_build_timeout_seconds", 1800),
             log=store.root / "adapter" / "llvm-build.log")
@@ -158,4 +167,5 @@ def build_engine(store, source, module):
                "adapter_manifest": json.loads((module.parent / (protocol.lower() + ".state.json")).read_text())}
     save_json(store.root / "adapter" / "build-profile.json", profile)
     store.register("engine", root, "adapter_build", [store.manifest["artifacts"]["adapter_source"]["artifact_id"]])
+    progress("AFL-ICP engine and instrumentation build complete.")
     return profile

@@ -58,182 +58,146 @@ AFL-ICP adds the following options to AFLNet. Run afl-fuzz --help to see all opt
 ```bash
 afl-fuzz -d -i <input_dir> -o <output_dir> -N <net_info> -P <protocol> -r <spec_file> -Y <mode> -Z <rate> [options] -- <target_binary> [target_args]
 ```
-## 4. Tutorial - Fuzzing libplctag library
-### Step 1: Prepare Python harness environment
+## 4. Tutorial - Fuzzing Modbus with libmodbus
+
+This tutorial uses the Modbus/TCP protocol adapter, the sample Modbus specification and user-provided seed corpus included in this repository, and the harness's supported `libmodbus` target recipe. The target is built locally and exercised on the loopback interface (`127.0.0.1`); this workflow does not fuzz a public Modbus service.
+
+Run the commands as the unprivileged account that owns the checkout. The examples assume the repository is `/home/aflicp/AFL-ICP-plus` and the virtual environment is `/home/aflicp/.venv-aflicp`. Adjust those paths if your installation differs. Complete the [Installation](#2-installation) steps and build AFL-ICP+ before starting this tutorial.
+
+### Step 1: Prepare the Python harness environment
+
+From the repository root, create the virtual environment once, activate it, and install the harness:
+
 ```bash
+cd /home/aflicp/AFL-ICP-plus
 python3 -m venv /home/aflicp/.venv-aflicp
 source /home/aflicp/.venv-aflicp/bin/activate
 python -m pip install --upgrade pip
 python -m pip install --upgrade -e ./harness
-# 若虚拟环境已经存在，跳过创建命令，只需启用它
 ```
 
-### Step 2: Protocol specification and seeds preparation
-Collect the industrial control protocol specification and some seeds of the target protocol. We have provided several sample industrial protocol specifications in `AFL-ICP-plus/sample_specs/PDF`: `IEC104.pdf`, `ethernetip.pdf`, `modbus.pdf`, `slmp.pdf`. We also have provided several sample protocol seeds in `/AFL-ICP-plus/tutorials/XX/in-XX/`.
+If the virtual environment already exists, skip `python3 -m venv` and activate it with the `source` command. Activate the environment again in every new shell or tmux session before using `aflicp`.
 
+### Step 2: Locate the specification and initial seeds
 
-### Step 3: 创建并编辑harness配置
+The repository includes the Modbus specification at `sample_specs/PDF/modbus.pdf` and user-provided initial seeds at `tutorials/libmodbus/in-modbus`. The initial seed directory is the experimental C0 corpus supplied by the user; the harness preserves it separately from the generated corpus.
+
+Check that both paths exist and that the seed directory contains nonempty files:
+
+```bash
+ls -l sample_specs/PDF/modbus.pdf
+find tutorials/libmodbus/in-modbus -type f -size +0c
+```
+
+### Step 3: Create and edit the harness configuration
+
+Copy the example configuration and open it:
+
 ```bash
 cp harness/config.example.yaml harness/config.yaml
 vim harness/config.yaml
 ```
-```YAML
-#将对应配置改为正确路径和待测目标协议设置（以modbus为例）
-protocol: MODBUS # Must match a protocol adapter registered in this AFL-ICP+ build.
-offline: false # Set true only when every model/OCR/target source dependency is already cached locally.
+
+Keep the configuration fields from `config.example.yaml` and update their values. Paths below are relative to `harness/config.yaml`:
+
+```yaml
+protocol: MODBUS
 
 specifications:
   - id: modbus-vendor-spec
-    path: ../specifications/modbus.pdf # REQUIRED: replace with an existing local PDF; add more list items for more PDFs.
-    # Each id must be unique. Paths are resolved relative to this config file.
+    path: ../sample_specs/PDF/modbus.pdf
 
 paths:
-  engine_root: .. # Normally the repository root; change only if using another AFLNet/AFL-ICP+ checkout.
-  user_seeds: ../seeds/C0 # REQUIRED: original user-provided C0, not the generated corpus; must contain nonempty files.
-  output_root: ../aflicp-output # REQUIRED: writable location for runs, caches, and reports; paths are config-relative.
+  engine_root: ..
+  user_seeds: ../tutorials/libmodbus/in-modbus
+  output_root: ../aflicp-output
 
-llm:
-  ...
-  profiles:
-    text:
-      provider: compatible # Choose compatible (OpenAI Chat Completions) or anthropic to match the provider API.
-      endpoint: https://api.deepseek.com/chat/completions # Full request URL, not only the provider base URL.
-      model: deepseek-v4-pro # REQUIRED: confirm model ID is available to your account/provider.
-      api_key_env: DEEPSEEK_API_KEY # REQUIRED: set this environment variable in the shell; never put the key here.
-      ...
-    vision:
-      provider: compatible
-      endpoint: https://api.deepseek.com/chat/completions
-      model: deepseek-flash # REQUIRED: must accept image input; current DeepSeek V4-Pro is text-only.
-      api_key_env: DEEPSEEK_API_KEY
-      ...
-    coding:
-      provider: compatible
-      endpoint: https://api.deepseek.com/chat/completions
-      model: deepseek-v4-pro # Adapter/seed generator and their reviewers share this profile/model.
-      api_key_env: DEEPSEEK_API_KEY
-      ...
-    reasoning:
-      provider: compatible
-      endpoint: https://api.deepseek.com/chat/completions
-      model: deepseek-v4-pro # Finding proposal and review share this profile/model.
-      api_key_env: DEEPSEEK_API_KEY
-      ...
-          
 target:
   id: libmodbus-local-simulator
-  recipe: libmodbus # First supported build recipe; other targets need a reviewed recipe or local executable.
-  build_backend: local               # Default: build with the host Ubuntu toolchain; Docker is optional.
-  engine_cc: clang # Must match the compiler used for this engine build.
-  llvm_cc: clang
-  llvm_cxx: clang++
-  instrumentation_mode: trace-pc-guard # Modern LLVM; avoids the legacy LLVM pass plugin.
+  recipe: libmodbus
+  build_backend: local
   repository: https://github.com/stephane/libmodbus
-  ref: REPLACE_WITH_COMMIT_SHA # REQUIRED: pin a reviewed commit for reproducibility; do not use a moving branch.
-  host: 127.0.0.1 # REQUIRED: only the authorized local/private lab target; never a public/production endpoint.
-  port: 1502 # Confirm this port is unused and matches the target launch configuration.
+  ref: REPLACE_WITH_A_PINNED_COMMIT_SHA
+  host: 127.0.0.1
+  port: 1502
   transport: tcp
-  build_timeout_seconds: 1800
-  build_memory_mb: 4096
-  build_cpus: 2
-...
 ```
 
-### Step 4: 设置tmux (根据需要选择)
-由于....于是设置tmux
+Replace `target.ref` with the full immutable commit SHA you intend to test. Do not leave the placeholder or use a moving branch. Preserve the compiler and instrumentation settings from the example configuration; they must match the AFL-ICP+ engine you built.
+
+Also review all four `llm.profiles` entries in the configuration. Set the provider, endpoint, model, JSON response options, and `api_key_env` to values supported by your provider. The `vision` profile must accept image inputs. The `api_key_env` value must exactly match the environment variable you export in Step 5. Do not put an API key directly in the YAML file.
+
+### Step 4: (Optional) Start a tmux session for long-running work
+
+A preparation run makes many model calls and can take a long time. Start tmux before setting the API key and launching `prepare`, so the environment variable and process stay in the same session if your SSH connection drops:
+
 ```bash
 cd /home/aflicp/AFL-ICP-plus
 tmux new -s aflicp-prepare
-
-#主动从tmux会话中退出，回到普通命令行
-#按Ctrl+B, 再按D
-
-#重新登录服务器后
-tmux ls
-tmux attach -t aflicp-prepare #如果看到aflicp-prepare
-tmux attach -d -t aflicp-prepare #如果提示aflicp-prepare会话仍被占用，用该命令接管
 ```
 
-### Step 5: 设置LLM API KEY并检查配置
-```bash
-source /home/aflicp/.venv-aflicp/bin/activate #启用虚拟环境
-read -rsp 'LLM API key: ' AFLICP_API_KEY
-export AFLICP_API_KEY
-test -n "$AFLICP_API_KEY" && echo "API key 已设置" #注意环境变量名要和config中引用的一致
-# echo $AFLICP_API_KEY #该命令会显示密钥
-```
+Run the remaining commands inside tmux. To detach while leaving the process running, press **Ctrl+B**, release the keys, then press **D**. After reconnecting, use `tmux attach -t aflicp-prepare` to return to the session. If tmux is unavailable, install it using your system administrator or root account; tmux is optional.
 
-### Step 6: 执行准备流程
+### Step 5: Set the LLM API key and validate the configuration
+
+The example configuration uses `DEEPSEEK_API_KEY`. If you changed `api_key_env`, use that exact variable name instead. The following prompt reads the key without echoing it:
+
 ```bash
-cd /home/aflicp/AFL-ICP-plus
 source /home/aflicp/.venv-aflicp/bin/activate
+read -r -s -p 'DeepSeek API key: ' DEEPSEEK_API_KEY
+printf '\n'
+export DEEPSEEK_API_KEY
+test -n "$DEEPSEEK_API_KEY" && echo 'API key is set'
+```
 
+Validate the file and input paths before running the preparation workflow:
+
+```bash
 aflicp validate-config --config harness/config.yaml
+```
+
+`validate-config` checks local configuration and input paths. It does not contact the LLM, clone/build the target, or start fuzzing.
+
+### Step 6: Prepare protocol knowledge, adapter, seeds, and target
+
+Run:
+
+```bash
 aflicp prepare --config harness/config.yaml
 ```
-prepare 会按 PDF 页处理文档并调用 LLM，也会构建 adapter、生成和验证种子、获取并编译配置的 libmodbus 目标，最后使用原始种子对 127.0.0.1:1502 做 dry-run。**这是多次 API 调用，可能产生明显高于单次测试的 token 费用。**准备成功后记下输出中的 run_id。
 
+Preparation processes every PDF page, detects sections, labels relevant segments, extracts and reviews protocol knowledge, generates and builds the adapter, generates and validates seeds, checks out and compiles the configured `libmodbus` target, and runs a representative dry-run against `127.0.0.1:1502`. It makes multiple LLM calls and can incur substantial token usage. The CLI prints timestamped stage and progress messages while it runs. The generated AFLNet input corpus is stored under the run's `corpus/input/`; the original C0 snapshot is kept under `corpus/user/`.
 
+When preparation completes, record the `run_id` printed in the final JSON output. Check the run status with:
 
-
-
-
-
-
-Use the provided scripts to convert the PDF specification into Markdown format and filter the content for LLM processing.
-1.  **PDF to Markdown Conversion**:
-    Configure API keys (Mistral OCR, LLM) and file paths in `parse_pdf_conversion.py`, then run the script:
-    `python3 parse_pdf_conversion.py`. This will generate an initial Markdown file from the PDF.
-2.  **Content Filtering**:
-    Configure API keys (LLM) and run the filtering script to clean and refine the Markdown content:
-    `python3 parse_filter.py`. Ensure the output Markdown file is saved in a directory accessible for the subsequent steps (e.g., `sample_specs/Markdown`).
-
-### Step 4: Compile Target (libplctag)
-Clone and compile the target library with AFL-ICP instrumentation and ASAN support.
 ```bash
-# Clone specific version of libplctag
-git clone https://github.com/libplctag/libplctag.git
-cd libplctag
-git checkout v2.6.12
-# Build with AFL-ICP instrumentation and ASAN
-mkdir -p build && cd build
-# AFL_USE_ASAN=1 enables AddressSanitizer in afl-clang-fast
-AFL_USE_ASAN=1 cmake .. \
-    -DCMAKE_C_COMPILER=afl-clang-fast \
-    -DCMAKE_CXX_COMPILER=afl-clang-fast++ \
-    -DCMAKE_C_FLAGS="-g -fno-omit-frame-pointer" \
-    -DCMAKE_CXX_FLAGS="-g -fno-omit-frame-pointer" \
-    -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DBUILD_TESTS=1 
-# Compile
-AFL_USE_ASAN=1 make -j$(nproc) plctag_static plctag_dyn modbus_server
+RUN_ID='PASTE_THE_RUN_ID_HERE'
+aflicp status --config harness/config.yaml --run-id "$RUN_ID"
 ```
 
-*(Optional)* **Traffic Collection**:
-You can also collect network traffic (PCAP) for the target protocol to help with seed generation. Please refer to the [AFLNet tutorial](https://github.com/aflnet/aflnet?tab=readme-ov-file#tutorial---fuzzing-live555-media-server) for instructions on how to capture and prepare traffic samples. 
+The run must reach the prepared/ready state and representative target validation must pass before fuzzing.
 
-### Step 5: Start Fuzzing
-AFL-ICP will automatically parse the protocol documentation, generate initial seeds (saved in the input directory), and start fuzzing.
+### Step 7: Start the fuzzing campaign
+
+Start the campaign against the locally built target using the prepared run:
+
 ```bash
-afl-fuzz -d -i <inputs> -o <outputs> -N tcp://127.0.0.1/5502 -P MODBUS -r /AFL-ICP/sample_specs/Markdown/modbus.md -D 10000 -Y 2 -Z 1 -q 3 -s 3 -E -K -R ./modbus_server --listen 127.0.0.1:5502
+aflicp run --config harness/config.yaml --run-id "$RUN_ID"
 ```
-*Note: The parsed protocol documentation and generated seeds will be stored in the specified input/output directories.* 
 
-### Step 6: Vulnerability Analysis
+Campaign duration and AFLNet options are controlled by the `campaign` section of `harness/config.yaml`. The CLI prints periodic campaign progress. AFLNet standard output and error are saved under the run's `fuzz/` directory. Check progress or the final state with:
 
-For the memory safety vulnerabilities, refer to the [AFLNet tutorial](https://github.com/aflnet/aflnet) for details on how to replay and analyze these crashes to identify memory safety issues.
+```bash
+aflicp status --config harness/config.yaml --run-id "$RUN_ID"
+```
 
-For the semantic and logic vulnerabilities, use the included specification consistency analysis tool to detect semantic deviations and logic bugs.
-1.  The Makefile for compiling the tool is located in the `functional_test` directory:
-    ```bash
-    cd functional_test
-    make -f Makefile.rfc-consistency
-    ```
-2.  Run the analysis using the interactions captured during fuzzing:
-    ```bash
-    # Usage: ./rfc-consistency <interactions_dir> <results_dir> <grammar_dir> <spec_markdown> <protocol>
-    # Example for MODBUS (assuming interactions are stored in ../out/interactions):
-    ./rfc-consistency ../out/interactions ./results ../modbus_output ../sample_specs/Markdown/modbus.md MODBUS
-    ```
+### Step 8: Review results
 
+After a campaign completes, run the evidence analysis and export the run artifacts if needed:
+
+```bash
+aflicp analyze --config harness/config.yaml --run-id "$RUN_ID"
+aflicp export --config harness/config.yaml --run-id "$RUN_ID" --output "../${RUN_ID}.tar.gz"
+```
+
+The run directory contains the resolved configuration, source and knowledge artifacts, generated adapter and seed corpus, target build logs, campaign logs, and analysis results. Keep this directory with the recorded run ID to reproduce or inspect the experiment.

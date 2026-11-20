@@ -1,12 +1,13 @@
 """Deterministic dependency graph for the four specialist agents and target support."""
 import os
 import shutil
+import threading
 import time
 from pathlib import Path
 from . import __version__
 from .agents import adaptation, seeds, specification
 from .artifacts import RunStore
-from .common import ICPError, file_hash, read_json, save_json
+from .common import ICPError, file_hash, progress, progress_idle, read_json, save_json
 from .config import load_config
 from .knowledge.bundle import KnowledgeBundle
 from .llm.client import ModelClient
@@ -23,6 +24,14 @@ TASK_INPUTS = {"document_and_knowledge": (), "protocol_adapter_and_engine": ("kn
                "initial_seeds": ("knowledge",), "target_profile": ("engine", "corpus"),
                "representative_target_validation": ("engine", "corpus", "target_profile"),
                "launch_barrier": ("knowledge", "adapter_source", "engine", "corpus", "target_profile")}
+TASK_LABELS = {
+    "document_and_knowledge": "Specification processing, knowledge extraction, and review",
+    "protocol_adapter_and_engine": "Protocol adapter generation, review, and AFLNet build",
+    "initial_seeds": "Initial seed generation, validation, and corpus construction",
+    "target_profile": "Target checkout and build",
+    "representative_target_validation": "Representative target interaction validation",
+    "launch_barrier": "Final preparation checks",
+}
 
 
 def _task(store, name, action, max_retries=0):
@@ -31,10 +40,23 @@ def _task(store, name, action, max_retries=0):
     entry["input_artifact_ids"] = sorted(store.manifest["artifacts"][artifact]["artifact_id"]
                                          for artifact in TASK_INPUTS.get(name, ()) if artifact in store.manifest.get("artifacts", {}))
     if entry.get("status") == "VALIDATED" and entry.get("output_artifact_ids"):
+        progress("Skipping %s: validated artifacts already exist." % TASK_LABELS.get(name, name))
         return None
     for attempt in range(max_retries + 1):
         entry.update({"status": "RUNNING", "attempts": attempt + 1, "started_at": time.time()})
         store.save()
+        started = time.monotonic()
+        label = TASK_LABELS.get(name, name)
+        progress("Starting %s (attempt %d)." % (label, attempt + 1))
+        heartbeat_stop = threading.Event()
+        def heartbeat():
+            while not heartbeat_stop.wait(30):
+                idle_seconds, last_message = progress_idle()
+                if idle_seconds >= 600:
+                    progress("Still working on %s (elapsed %.0f seconds; no progress milestone for %.0f seconds). Last update: %s" %
+                             (label, time.monotonic() - started, idle_seconds, last_message))
+        heartbeat_thread = threading.Thread(target=heartbeat, name="aflicp-progress", daemon=True)
+        heartbeat_thread.start()
         try:
             before_ids = {artifact["artifact_id"] for artifact in store.manifest.get("artifacts", {}).values()}
             value = action()
@@ -42,14 +64,20 @@ def _task(store, name, action, max_retries=0):
             entry.update({"status": "VALIDATED", "completed_at": time.time(), "result": str(value) if value is not None else None,
                           "output_artifact_ids": sorted(after_ids - before_ids)})
             store.save()
+            progress("Completed %s in %.1f seconds." % (TASK_LABELS.get(name, name), time.monotonic() - started))
             return value
         except BaseException as exc:
             diagnostic = store.diagnostic(name, exc, attempt=attempt)
             entry["diagnostics"].append(diagnostic)
             entry["status"] = "RETRY_PENDING" if getattr(exc, "retryable", False) and attempt < max_retries else "FAILED"
             store.save()
+            progress("%s %s after %.1f seconds: %s" % (TASK_LABELS.get(name, name), entry["status"].lower(),
+                                                        time.monotonic() - started, str(exc)))
             if entry["status"] == "FAILED":
                 raise
+        finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=2)
     return None
 
 
@@ -124,6 +152,7 @@ def launch_barrier(store):
 
 def prepare(config, model=None, store=None):
     store = store or create_store(config)
+    progress("Preparation run %s started; artifacts: %s" % (store.manifest["run_id"], store.root))
     model = model or ModelClient(store.config, store.root)
     engine_root = store.config["paths"].get("engine_root", str(Path(__file__).parents[3]))
     _task(store, "document_and_knowledge", lambda: specification.prepare(store, model))
@@ -151,6 +180,7 @@ def prepare(config, model=None, store=None):
     _task(store, "launch_barrier", lambda: launch_barrier(store))
     store.manifest["status"] = "prepared"
     store.save()
+    progress("Preparation complete. Run ID: %s" % store.manifest["run_id"])
     return store
 
 

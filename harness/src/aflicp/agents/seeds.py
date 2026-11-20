@@ -4,7 +4,7 @@ import json
 import shutil
 from collections import Counter
 from pathlib import Path
-from ..common import ICPError, atomic_write, file_hash, save_json, tree_manifest
+from ..common import ICPError, atomic_write, file_hash, progress, save_json, tree_manifest
 from ..llm.client import require_review
 from ..seeds.corpus import merge_corpus
 from ..seeds.sandbox import run_generator
@@ -43,6 +43,7 @@ def prepare(store, model, bundle):
         try:
             cached_input = store.config.get("reuse", {}).get("corpus_input")
             if cached_input:
+                progress("Validating and reusing the configured seed corpus.")
                 gate_path = store.config.get("reuse", {}).get("corpus_validation")
                 if not gate_path:
                     raise ICPError("Cached corpus requires reuse.corpus_validation manifest")
@@ -68,6 +69,7 @@ def prepare(store, model, bundle):
                           "input_hashes": tree_manifest(destination), "knowledge_bundle_id": bundle.manifest["bundle_id"]}
                 save_json(store.root / "corpus" / "corpus-manifest.json", report)
                 store.register("corpus", destination, "validated_cache", [bundle.manifest["bundle_id"]])
+                progress("Validated seed corpus ready: %d files." % report["final_count"])
                 return report
 
             generator_source = store.config.get("reuse", {}).get("generator_source")
@@ -81,12 +83,15 @@ def prepare(store, model, bundle):
                 program = Path(generator_source).read_text()
                 review = {"status": "validated-reuse-gate", "validation_manifest": str(validation_path)}
             else:
+                progress("Generating the seed-generator program (attempt %d/%d)." %
+                         (attempt + 1, store.config["repair"]["generator_max_retries"] + 1))
                 response = model.call("coding", "seed_generator", {"knowledge": bundle.select_context("seed"),
                     "candidate_budget": store.config["seeds"]["candidate_budget"], "random_seed": store.config["seeds"]["random_seed"],
                     "max_seed_bytes": store.config["seeds"]["max_seed_bytes"], "max_sequence_messages": store.config["seeds"]["max_sequence_messages"],
                     "diagnostics": store.tasks.get("generator_diagnostics", [])})
                 program = response.get("source_code")
                 validate_program(program)
+                progress("Reviewing generated seed-generator program.")
                 review = model.call("coding", "seed_review", {"source_code": program, "knowledge": bundle.select_context("seed")})
                 require_review(review)
                 store.tasks.setdefault("generator_review", []).append(review)
@@ -96,12 +101,14 @@ def prepare(store, model, bundle):
             atomic_write(attempt_root / "generator.py", program)
             save_json(attempt_root / "review.json", review)
             _snapshot_c0(store, c0)
+            progress("Executing seed generator in the configured restricted environment.")
             output, manifest = run_generator(store.config, store.root, bundle, program, attempt_root)
             shutil.copyfile(attempt_root / "generator.py", store.root / "generator" / "generator.py")
             save_json(attempt_root / "execution.json", manifest)
             report = merge_corpus(c0, output, store.root / "corpus" / "input", bundle, store.config)
             store.register("corpus", store.root / "corpus" / "input", "seed_synthesis_agent", [bundle.manifest["bundle_id"]])
             save_json(store.root / "corpus" / "corpus-report.json", report)
+            progress("Seed generation and corpus processing complete: %d input file(s)." % report.get("final_count", 0))
             return report
         except (ICPError, OSError, ValueError, KeyError, TypeError, RecursionError) as exc:
             staging = store.root / "corpus" / ".input-staging-input"
@@ -110,6 +117,7 @@ def prepare(store, model, bundle):
             item = store.diagnostic("seeds", exc, attempt=attempt)
             store.tasks.setdefault("generator_diagnostics", []).append(item)
             store.save()
+            progress("Seed generation attempt %d failed: %s" % (attempt + 1, str(exc)))
     raise ICPError("Seed generation/validation budget exhausted")
 
 

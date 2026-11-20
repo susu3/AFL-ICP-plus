@@ -3,6 +3,8 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 
@@ -10,6 +12,27 @@ class ICPError(Exception):
     def __init__(self, message, category="preparation", retryable=False):
         super().__init__(message)
         self.category, self.retryable = category, retryable
+
+
+_progress_lock = threading.Lock()
+_last_progress_at = time.monotonic()
+_last_progress_message = ""
+
+
+def progress(message):
+    """Write a timestamped, immediately flushed progress line for long workflows."""
+    global _last_progress_at, _last_progress_message
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    with _progress_lock:
+        _last_progress_at = time.monotonic()
+        _last_progress_message = str(message)
+        print("[aflicp %s] %s" % (timestamp, message), flush=True)
+
+
+def progress_idle():
+    """Return seconds since the latest visible progress message and its text."""
+    with _progress_lock:
+        return time.monotonic() - _last_progress_at, _last_progress_message
 
 
 def canonical(value):

@@ -9,7 +9,7 @@ import tempfile
 import time
 import urllib.parse
 from pathlib import Path
-from ..common import ICPError, command, file_hash, save_json
+from ..common import ICPError, command, file_hash, progress, save_json
 
 
 def _safe_repository(value):
@@ -46,6 +46,7 @@ def _checkout(store, repository, ref):
     staging = Path(tempfile.mkdtemp(prefix="checkout-", dir=str(cache.parent)))
     shutil.rmtree(staging)
     try:
+        progress("Downloading target source from %s at pinned ref %s." % (repository, ref))
         command(["git", "clone", "--no-tags", "--no-checkout", repository, str(staging)],
                 timeout=store.config.get("target", {}).get("checkout_timeout_seconds", 600),
                 log=store.root / "target" / "checkout.log")
@@ -55,6 +56,7 @@ def _checkout(store, repository, ref):
         if not re.fullmatch(r"[0-9a-f]{40,64}", commit):
             raise ICPError("Git did not resolve to a full immutable commit")
         os.replace(staging, cache)
+        progress("Target source checkout complete at commit %s." % commit)
         return cache, commit
     except BaseException:
         if staging.exists():
@@ -96,6 +98,7 @@ class TargetManager:
         self.target = self.config["target"]
 
     def prepare(self, fuzzer, corpus):
+        progress("Preparing target profile for %s." % self.target.get("id", self.target.get("repository", "local target")))
         target_root = self.store.root / "target"
         target_root.mkdir(parents=True, exist_ok=True)
         source = None
@@ -111,6 +114,7 @@ class TargetManager:
             if self.target.get("recipe") != "libmodbus":
                 raise ICPError("No validated recipe exists for this target; provide a local executable or source profile")
             if self.target.get("source"):
+                progress("Copying configured local target source tree.")
                 original = Path(self.target["source"]).resolve()
                 if not original.is_dir():
                     raise ICPError("target.source is not a directory")
@@ -139,12 +143,16 @@ class TargetManager:
                 build_env = dict(os.environ)
                 build_env.update({"CC": str(afl_clang), "AFL_PATH": str(engine)})
                 timeout = self.target.get("build_timeout_seconds", 1800)
+                progress("Building libmodbus target: running autogen.sh.")
                 command(["./autogen.sh"], cwd=source, env=build_env, timeout=timeout,
                         log=target_root / "build-autogen.log")
+                progress("Building libmodbus target: running configure.")
                 command(["./configure", "--enable-static"], cwd=source, env=build_env, timeout=timeout,
                         log=target_root / "build-configure.log")
+                progress("Building libmodbus target: compiling library.")
                 command(["make", "clean", "all"], cwd=source, env=build_env, timeout=timeout,
                         log=target_root / "build-libmodbus.log")
+                progress("Building instrumented libmodbus test server.")
                 command([str(afl_clang), "random-test-server.c", "-I../src", "../src/.libs/libmodbus.a", "-o", "server"],
                         cwd=source / "tests", env=build_env, timeout=timeout, log=target_root / "build-server.log")
             elif build_backend == "docker":
@@ -190,6 +198,7 @@ class TargetManager:
                    "validation_report": None}
         save_json(target_root / "target-profile.json", profile)
         self.store.register("target_profile", target_root / "target-profile.json", "target_manager")
+        progress("Target build/profile ready: %s." % executable)
         return profile
 
     @staticmethod
