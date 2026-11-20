@@ -66,7 +66,6 @@ source /home/aflicp/.venv-aflicp/bin/activate
 python -m pip install --upgrade pip
 python -m pip install --upgrade -e ./harness
 # 若虚拟环境已经存在，跳过创建命令，只需启用它
-#source /home/aflicp/.venv-aflicp/bin/activate
 ```
 
 ### Step 2: Protocol specification and seeds preparation
@@ -80,31 +79,106 @@ vim harness/config.yaml
 ```
 ```YAML
 #将对应配置改为正确路径和待测目标协议设置（以modbus为例）
-protocol: MODBUS
+protocol: MODBUS # Must match a protocol adapter registered in this AFL-ICP+ build.
+offline: false # Set true only when every model/OCR/target source dependency is already cached locally.
 
 specifications:
-  - id: modbus-spec
-    path: ../sample_specs/PDF/modbus.pdf
+  - id: modbus-vendor-spec
+    path: ../specifications/modbus.pdf # REQUIRED: replace with an existing local PDF; add more list items for more PDFs.
+    # Each id must be unique. Paths are resolved relative to this config file.
 
 paths:
-  engine_root: ..
-  user_seeds: ../tutorials/libmodbus/in-modbus
-  output_root: ../aflicp-output
+  engine_root: .. # Normally the repository root; change only if using another AFLNet/AFL-ICP+ checkout.
+  user_seeds: ../seeds/C0 # REQUIRED: original user-provided C0, not the generated corpus; must contain nonempty files.
+  output_root: ../aflicp-output # REQUIRED: writable location for runs, caches, and reports; paths are config-relative.
 
+llm:
+  ...
+  profiles:
+    text:
+      provider: compatible # Choose compatible (OpenAI Chat Completions) or anthropic to match the provider API.
+      endpoint: https://api.deepseek.com/chat/completions # Full request URL, not only the provider base URL.
+      model: deepseek-v4-pro # REQUIRED: confirm model ID is available to your account/provider.
+      api_key_env: DEEPSEEK_API_KEY # REQUIRED: set this environment variable in the shell; never put the key here.
+      ...
+    vision:
+      provider: compatible
+      endpoint: https://api.deepseek.com/chat/completions
+      model: deepseek-flash # REQUIRED: must accept image input; current DeepSeek V4-Pro is text-only.
+      api_key_env: DEEPSEEK_API_KEY
+      ...
+    coding:
+      provider: compatible
+      endpoint: https://api.deepseek.com/chat/completions
+      model: deepseek-v4-pro # Adapter/seed generator and their reviewers share this profile/model.
+      api_key_env: DEEPSEEK_API_KEY
+      ...
+    reasoning:
+      provider: compatible
+      endpoint: https://api.deepseek.com/chat/completions
+      model: deepseek-v4-pro # Finding proposal and review share this profile/model.
+      api_key_env: DEEPSEEK_API_KEY
+      ...
+          
 target:
   id: libmodbus-local-simulator
-  recipe: libmodbus
-  build_backend: local
-  engine_cc: clang
+  recipe: libmodbus # First supported build recipe; other targets need a reviewed recipe or local executable.
+  build_backend: local               # Default: build with the host Ubuntu toolchain; Docker is optional.
+  engine_cc: clang # Must match the compiler used for this engine build.
   llvm_cc: clang
   llvm_cxx: clang++
-  instrumentation_mode: trace-pc-guard
+  instrumentation_mode: trace-pc-guard # Modern LLVM; avoids the legacy LLVM pass plugin.
   repository: https://github.com/stephane/libmodbus
-  ref: 5c14f13
-  host: 127.0.0.1
-  port: 1502
+  ref: REPLACE_WITH_COMMIT_SHA # REQUIRED: pin a reviewed commit for reproducibility; do not use a moving branch.
+  host: 127.0.0.1 # REQUIRED: only the authorized local/private lab target; never a public/production endpoint.
+  port: 1502 # Confirm this port is unused and matches the target launch configuration.
   transport: tcp
+  build_timeout_seconds: 1800
+  build_memory_mb: 4096
+  build_cpus: 2
+...
 ```
+
+### Step 4: 设置tmux (根据需要选择)
+由于....于是设置tmux
+```bash
+cd /home/aflicp/AFL-ICP-plus
+tmux new -s aflicp-prepare
+
+#主动从tmux会话中退出，回到普通命令行
+#按Ctrl+B, 再按D
+
+#重新登录服务器后
+tmux ls
+tmux attach -t aflicp-prepare #如果看到aflicp-prepare
+tmux attach -d -t aflicp-prepare #如果提示aflicp-prepare会话仍被占用，用该命令接管
+```
+
+### Step 5: 设置LLM API KEY并检查配置
+```bash
+source /home/aflicp/.venv-aflicp/bin/activate #启用虚拟环境
+read -rsp 'LLM API key: ' AFLICP_API_KEY
+export AFLICP_API_KEY
+test -n "$AFLICP_API_KEY" && echo "API key 已设置" #注意环境变量名要和config中引用的一致
+# echo $AFLICP_API_KEY #该命令会显示密钥
+```
+
+### Step 6: 执行准备流程
+```bash
+cd /home/aflicp/AFL-ICP-plus
+source /home/aflicp/.venv-aflicp/bin/activate
+
+aflicp validate-config --config harness/config.yaml
+aflicp prepare --config harness/config.yaml
+```
+prepare 会按 PDF 页处理文档并调用 LLM，也会构建 adapter、生成和验证种子、获取并编译配置的 libmodbus 目标，最后使用原始种子对 127.0.0.1:1502 做 dry-run。**这是多次 API 调用，可能产生明显高于单次测试的 token 费用。**准备成功后记下输出中的 run_id。
+
+
+
+
+
+
+
 
 Use the provided scripts to convert the PDF specification into Markdown format and filter the content for LLM processing.
 1.  **PDF to Markdown Conversion**:
