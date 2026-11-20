@@ -11,6 +11,28 @@ def text_reliable(text):
     return len(visible) >= 20 and sum(c.isprintable() and c != "\ufffd" for c in visible) / len(visible) > .97
 
 
+def _vision_result_errors(result, document_id, page_number):
+    errors = []
+    if not isinstance(result, dict):
+        return ["response must be a JSON object"]
+    if result.get("document_id") != document_id:
+        errors.append("document_id must equal %r" % document_id)
+    if type(result.get("page_number")) is not int or result.get("page_number") != page_number:
+        errors.append("page_number must be integer %d" % page_number)
+    if not isinstance(result.get("items"), list):
+        errors.append("items must be an array")
+    if not isinstance(result.get("uncertainties"), list):
+        errors.append("uncertainties must be an array (use [] when there are none)")
+    continuations = result.get("page_continuations")
+    if not isinstance(continuations, dict):
+        errors.append("page_continuations must be an object")
+    else:
+        for field in ("continues_from_previous", "continues_to_next"):
+            if type(continuations.get(field)) is not bool:
+                errors.append("page_continuations.%s must be a boolean" % field)
+    return errors
+
+
 def ocr_page(image, backend, config, destination):
     if backend == "tesseract":
         return command(["tesseract", str(image), "stdout", "-l", config.get("ocr_languages", "eng")], timeout=config.get("ocr_timeout_seconds", 180))
@@ -164,13 +186,30 @@ def prepare_documents(config, root, model):
                     text += "\n\n### PP-StructureV3 layout/table OCR (additional view)\n" + layout_text
             atomic_write(docroot / "pages" / (page_id + ".md"), text)
             # Vision processes every complete page, including vectors; no embedded-image heuristic.
-            interpretation = model.call("vision", "reconstruction", {"document_id": spec["id"], "page_number": number,
-                                "page_markdown": text, "previous_page_markdown": pages[-1]["text"] if pages else ""}, [image])
-            continuations = interpretation.get("page_continuations", {})
-            if (interpretation.get("document_id") != spec["id"] or interpretation.get("page_number") != number or
-                not isinstance(interpretation.get("items"), list) or not isinstance(interpretation.get("uncertainties"), list) or
-                not isinstance(continuations.get("continues_from_previous"), bool) or not isinstance(continuations.get("continues_to_next"), bool)):
-                raise ICPError("Invalid vision result for " + page_id, "model_format", True)
+            vision_input = {"document_id": spec["id"], "page_number": number,
+                            "page_markdown": text, "previous_page_markdown": pages[-1]["text"] if pages else ""}
+            max_repairs = config["repair"]["specification_max_retries"]
+            interpretation, validation_errors = None, []
+            for attempt in range(max_repairs + 1):
+                request_data = vision_input
+                if attempt:
+                    request_data = {**vision_input, "validation_errors": validation_errors,
+                                    "validation_attempt": attempt}
+                    progress("Repairing vision response for %s (attempt %d/%d): %s" %
+                             (page_id, attempt, max_repairs, "; ".join(validation_errors)))
+                stage = "reconstruction" if attempt == 0 else "reconstruction_repair"
+                interpretation = model.call("vision", stage, request_data, [image])
+                validation_errors = _vision_result_errors(interpretation, spec["id"], number)
+                if not validation_errors:
+                    if attempt:
+                        progress("Vision response repaired and validated for %s." % page_id)
+                    break
+                append_jsonl(root / "diagnostics.jsonl", {"stage": "vision_validation", "page": page_id,
+                             "attempt": attempt, "errors": validation_errors})
+                if attempt == max_repairs:
+                    raise ICPError("Invalid vision result for " + page_id + ": " + "; ".join(validation_errors),
+                                    "model_format")
+            continuations = interpretation["page_continuations"]
             save_json(docroot / "visual_descriptions" / (page_id + ".json"), interpretation)
             merged = text + "\n\n### Whole-page visual interpretation (not verbatim source)\n" + json.dumps(interpretation, ensure_ascii=False)
             pages.append({"id": page_id, "number": number, "text": merged, "page_text": text,
